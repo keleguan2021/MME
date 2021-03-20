@@ -6,24 +6,18 @@
 @Software: PyCharm
 @Desc    : 
 """
-import os
 import argparse
-import pickle
+import os
 import random
 import shutil
-import sys
 import warnings
-from datetime import datetime
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import torchvision.transforms as TF
-from torch.utils.data import DataLoader, SubsetRandomSampler
-
 from sklearn.model_selection import KFold
-from tqdm.std import tqdm
+
+from mme import DCC
+from mme.dataset import SEEDDataset, SEED_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -41,7 +35,23 @@ def setup_seed(seed):
 def parse_args(verbose=True):
     parser = argparse.ArgumentParser()
 
+    # Dataset
+    parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
+    parser.add_argument('--data-name', type=str, default='SEED')
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
+
+    # Model
+    parser.add_argument('--input-channel', type=int, default=62)
+    parser.add_argument('--feature-dim', type=int, default=128)
+    parser.add_argument('--num-seq', type=int, default=10)
+
+    # Training
+    parser.add_argument('--kfold', type=int, default=10)
+    parser.add_argument('--fold', type=int, default=0)
+    parser.add_argument('--device', type=int, default=0)
+    parser.add_argument('--resume', action='store_true')
+
+    parser.add_argument('--num-patients', type=int)
 
     parser.add_argument('--seed', type=int, default=2020)
 
@@ -62,6 +72,29 @@ def parse_args(verbose=True):
     return args_parsed
 
 
+def pretrain():
+    pass
+
+
+def finetune():
+    pass
+
+
+def evaluate():
+    pass
+
+
+def run(run_id, train_patients, test_patients, args):
+    print('Train patient ids:', train_patients)
+    print('Test patient ids:', test_patients)
+
+    model = DCC(args.input_channel, args.feature_dim, True, 0.07)
+    model.cuda(args.device)
+
+    train_dataset = SEEDDataset(args.data_path, args.num_seq, train_patients)
+    pretrain()
+
+
 if __name__ == '__main__':
     args = parse_args()
 
@@ -75,3 +108,20 @@ if __name__ == '__main__':
         warnings.warn(f'The path {args.save_path} already exists, deleted...')
         shutil.rmtree(args.save_path)
         os.makedirs(args.save_path)
+
+    if args.data_name == 'SEED':
+        num_patients = SEED_NUM_SUBJECT
+    else:
+        raise ValueError
+
+    patients = np.arange(num_patients)
+
+    assert args.kfold <= len(patients)
+    assert args.fold < args.kfold
+    kf = KFold(n_splits=args.kfold)
+    for i, (train_index, test_index) in enumerate(kf.split(patients)):
+        if i == args.fold:
+            print(f'[INFO] Running cross validation for {i + 1}/{args.kfold} fold...')
+            train_patients, test_patients = patients[train_index].tolist(), patients[test_index].tolist()
+            run(i, train_patients, test_patients, args)
+            break
