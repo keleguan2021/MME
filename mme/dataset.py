@@ -17,7 +17,7 @@ from tqdm.std import tqdm
 
 SEED_NUM_SUBJECT = 45
 SEED_SAMPLING_RATE = 200
-SEED_LABELS = [1, 0, -1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 0, 1, -1]
+SEED_LABELS = [2, 1, 0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 1, 2, 0]
 
 
 class SEEDDataset(Dataset):

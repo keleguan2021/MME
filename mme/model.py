@@ -14,15 +14,16 @@ from .backbone import Encoder
 
 
 class DCC(nn.Module):
-    def __init__(self, input_channels, feature_dim, use_temperature, temperature):
+    def __init__(self, input_channels, feature_dim, use_temperature, temperature, device):
         super(DCC, self).__init__()
 
         self.input_channels = input_channels
         self.feature_dim = feature_dim
         self.use_temperature = use_temperature
         self.temperature = temperature
-        self.encoder = Encoder(input_channels, feature_dim)
+        self.device = device
 
+        self.encoder = Encoder(input_channels, feature_dim)
         self.targets = None
 
     def forward(self, x):
@@ -68,20 +69,17 @@ class DCC(nn.Module):
 
 
 class DCCClassifier(nn.Module):
-    def __init__(self, input_channels, hidden_channels, feature_dim, num_class,
-                 use_l2_norm, use_dropout, use_batch_norm, device):
+    def __init__(self, input_channels, feature_dim, num_class, use_l2_norm, use_dropout, use_batch_norm, device):
         super(DCCClassifier, self).__init__()
 
         self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.device = device
         self.use_l2_norm = use_l2_norm
         self.use_dropout = use_dropout
         self.use_batch_norm = use_batch_norm
 
-        self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
-                              final_fc=True)
+        self.encoder = Encoder(input_channels, feature_dim)
 
         final_fc = []
 
