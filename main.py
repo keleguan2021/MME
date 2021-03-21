@@ -23,7 +23,7 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, get_performance
-from mme.dataset import SEEDDataset, SEED_NUM_SUBJECT
+from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -43,9 +43,10 @@ def parse_args(verbose=True):
 
     # Dataset
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
-    parser.add_argument('--data-name', type=str, default='SEED')
+    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
+    parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
 
     # Model
     parser.add_argument('--input-channel', type=int, default=62)
@@ -217,10 +218,18 @@ def run(run_id, train_patients, test_patients, args):
     print('Train patient ids:', train_patients)
     print('Test patient ids:', test_patients)
 
-    model = DCC(args.input_channel, args.feature_dim, True, 0.07, args.device)
+    if args.data_name == 'SEED':
+        input_size = 200
+    elif args.data_name == 'DEAP':
+        input_size = 128
+    else:
+        raise ValueError
+
+    model = DCC(input_size, args.input_channel, args.feature_dim, True, 0.07, args.device)
     model.cuda(args.device)
 
-    train_dataset = SEEDDataset(args.data_path, args.num_seq, train_patients)
+    train_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, train_patients,
+                                                     label_dim=args.label_dim)
     pretrain(run_id, model, train_dataset, args.device, args)
 
     # Finetuning
@@ -233,7 +242,8 @@ def run(run_id, train_patients, test_patients, args):
         use_l2_norm = False
         use_final_bn = False
 
-    classifier = DCCClassifier(input_channels=args.input_channel, feature_dim=args.feature_dim, num_class=args.classes,
+    classifier = DCCClassifier(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
+                               num_class=args.classes,
                                use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
                                device=args.device)
     classifier.cuda(args.device)
@@ -242,7 +252,8 @@ def run(run_id, train_patients, test_patients, args):
 
     finetune(classifier, train_dataset, args.device, args)
 
-    test_dataset = SEEDDataset(args.data_path, args.num_seq, test_patients)
+    test_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, test_patients,
+                                                    label_dim=args.label_dim)
     scores, targets = evaluate(classifier, test_dataset, args.device, args)
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
@@ -266,6 +277,8 @@ if __name__ == '__main__':
 
     if args.data_name == 'SEED':
         num_patients = SEED_NUM_SUBJECT
+    elif args.data_name == 'DEAP':
+        num_patients = DEAP_NUM_SUBJECT
     else:
         raise ValueError
 

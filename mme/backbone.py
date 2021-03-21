@@ -11,11 +11,11 @@ import torch.nn as nn
 
 
 class Encoder(nn.Module):
-    def __init__(self, input_channel, feature_dim):
+    def __init__(self, input_size, input_channel, feature_dim):
         super(Encoder, self).__init__()
 
         self.features = nn.Sequential(
-            nn.Conv1d(input_channel, 64, kernel_size=4, stride=1, padding=1),
+            nn.Conv1d(input_channel, 64, kernel_size=3, stride=1, padding=1),
             nn.ELU(inplace=True),
             nn.BatchNorm1d(64, eps=0.001),
             nn.Conv1d(64, 64, kernel_size=3, stride=1, padding=1),
@@ -41,9 +41,13 @@ class Encoder(nn.Module):
             nn.MaxPool1d(kernel_size=2, stride=2)
         )
 
+        last_size = input_size
+        for i in range(3):
+            last_size //= 2
+
         self.fc = nn.Sequential(
             nn.Dropout(0.5),
-            nn.Linear(256 * 24, feature_dim),
+            nn.Linear(256 * last_size, feature_dim),
             nn.ELU(inplace=True),
             nn.BatchNorm1d(feature_dim, eps=0.001),
             nn.Linear(feature_dim, feature_dim)
