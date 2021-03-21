@@ -23,6 +23,7 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, get_performance
+from mme import SEEDDataset, DEAPDataset, AMIGOSDataset
 from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
 
@@ -116,8 +117,6 @@ def pretrain(run_id, model, dataset, device, args):
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
-
-                print(x)
 
                 output, target = model(x)
 
