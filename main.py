@@ -23,7 +23,7 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, get_performance
-from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT
+from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -43,7 +43,7 @@ def parse_args(verbose=True):
 
     # Dataset
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
-    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP'])
+    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP', 'AMIGOS'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
@@ -116,6 +116,8 @@ def pretrain(run_id, model, dataset, device, args):
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
+
+                print(x)
 
                 output, target = model(x)
 
@@ -222,6 +224,8 @@ def run(run_id, train_patients, test_patients, args):
         input_size = 200
     elif args.data_name == 'DEAP':
         input_size = 128
+    elif args.data_name == 'AMIGOS':
+        input_size = 128
     else:
         raise ValueError
 
@@ -279,6 +283,8 @@ if __name__ == '__main__':
         num_patients = SEED_NUM_SUBJECT
     elif args.data_name == 'DEAP':
         num_patients = DEAP_NUM_SUBJECT
+    elif args.data_name == 'AMIGOS':
+        num_patients = AMIGOS_NUM_SUBJECT
     else:
         raise ValueError
 
