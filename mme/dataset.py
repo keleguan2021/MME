@@ -171,6 +171,12 @@ class AMIGOSDataset(Dataset):
                                                 trial_data.shape[-1])
                 trial_data = np.swapaxes(trial_data, 1, 2)
 
+                if np.isnan(trial_data).any():
+                    warnings.warn(
+                        f"The array of {a_file} - {i} contains {np.sum(np.isnan(trial_data))} NaN of total {np.prod(trial_data.shape)} points, dropped.")
+                    # trial_data[np.isnan(trial_data)] = 0
+                    continue
+
                 if trial_data.shape[0] % num_seq != 0:
                     trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
 
