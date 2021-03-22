@@ -7,6 +7,8 @@
 @Desc    : 
 """
 import os
+import sys
+import pickle
 import shutil
 import random
 import warnings
@@ -20,10 +22,13 @@ from sklearn.model_selection import KFold
 
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 
 from mme import Encoder
+from mme import logits_accuracy, get_performance
+from mme import SEEDDataset, DEAPDataset, AMIGOSDataset
 from mme.dataset import (
     SEED_NUM_SUBJECT, SEED_SAMPLING_RATE, SEED_LABELS,
     DEAP_NUM_SUBJECT, DEAP_SAMPLING_RATE,
@@ -73,12 +78,12 @@ def parse_args(verbose=True):
     parser.add_argument('--finetune-mode', type=str, default='freeze', choices=['freeze', 'smaller', 'all'])
     parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
     parser.add_argument('--lr-schedule', type=int, nargs='*', default=[120, 160])
-    parser.add_argument('--batch-size', type=int, default=64)
+    parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--num-workers', type=int, default=0)
     parser.add_argument('--use-temperature', action='store_true')
 
     # Optimization
-    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'])
+    parser.add_argument('--optimizer', type=str, default='adam', choices=['sgd', 'adam'])
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--wd', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.9, help='Only valid for SGD optimizer')
@@ -102,6 +107,19 @@ def parse_args(verbose=True):
         print(message)
 
     return args_parsed
+
+
+class SoftLogitLoss(nn.Module):
+    def __init__(self):
+        super(SoftLogitLoss, self).__init__()
+
+    def forward(self, output: torch.Tensor, target: torch.Tensor):
+        # print(output.shape, target.shape)
+        if len(target.shape) == 1:
+            target = target.view(-1, 1)
+        loss = torch.log(1 + torch.exp(-target * output)).mean()
+
+        return loss
 
 
 class RPDataset(Dataset):
@@ -311,16 +329,16 @@ class RelativePosition(nn.Module):
 
 
 class SimpleClassifier(nn.Module):
-    def __init__(self, input_channels, hidden_channels, feature_dim, num_classes,
+    def __init__(self, input_size, input_channels, feature_dim, num_classes,
                  use_l2_norm, use_dropout, use_batch_norm, device='cuda'):
         super(SimpleClassifier, self).__init__()
 
+        self.input_size = input_size
         self.num_classes = num_classes
         self.use_l2_norm = use_l2_norm
         self.use_dropout = use_dropout
         self.use_batch_norm = use_batch_norm
         self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.device = device
 
@@ -347,6 +365,125 @@ class SimpleClassifier(nn.Module):
         return out
 
 
+def pretrain(model, dataset, device, run_id, args):
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
+    else:
+        raise ValueError('Invalid optimizer!')
+
+    criterion = SoftLogitLoss().cuda(device)
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=True, pin_memory=True, drop_last=True)
+
+    model.train()
+    for epoch in range(args.pretrain_epochs):
+        losses = []
+        accuracies = []
+        # adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
+        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
+            for x, y in progress_bar:
+                x = x.cuda(device, non_blocking=True)
+                y = y.cuda(device, non_blocking=True)
+
+                out = model(x[:, 0], x[:, 1])
+                loss = criterion(out, y)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                losses.append(loss.item())
+
+                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+
+
+def finetune(classifier, dataset, device, args):
+    params = []
+    if args.finetune_mode == 'freeze':
+        print('[INFO] Finetune classifier only for the last layer...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name or 'agg' in name:
+                param.requires_grad = False
+            else:
+                params.append({'params': param})
+    elif args.finetune_mode == 'smaller':
+        print('[INFO] Finetune the whole classifier where the backbone have a smaller lr...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name or 'agg' in name:
+                params.append({'params': param, 'lr': args.lr / 10})
+            else:
+                params.append({'params': param})
+    else:
+        print('[INFO] Finetune the whole classifier...')
+        for name, param in classifier.named_parameters():
+            params.append({'params': param})
+
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
+    else:
+        raise ValueError('Invalid optimizer!')
+
+    criterion = nn.CrossEntropyLoss().cuda(device)
+
+    sampled_indices = np.arange(len(dataset))
+    np.random.shuffle(sampled_indices)
+    sampled_indices = sampled_indices[:int(len(sampled_indices) * args.finetune_ratio)]
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=False, pin_memory=True, drop_last=True,
+                             sampler=SubsetRandomSampler(sampled_indices))
+
+    classifier.train()
+    for epoch in range(args.finetune_epochs):
+        losses = []
+        accuracies = []
+        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.finetune_epochs}]') as progress_bar:
+            for x, y in progress_bar:
+                x, y = x.cuda(device, non_blocking=True), y.cuda(device, non_blocking=True)
+
+                x = x.view(x.shape[0] * x.shape[1], *x.shape[2:])
+                out = classifier(x)
+                loss = criterion(out, y.view(-1))
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                losses.append(loss.item())
+                accuracies.append(
+                    logits_accuracy(out, y.view(-1), topk=(1,))[0])
+
+                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+
+
+def evaluate(classifier, dataset, device, args):
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=True, pin_memory=True, drop_last=True)
+
+    targets = []
+    scores = []
+
+    classifier.eval()
+    with torch.no_grad():
+        for x, y in data_loader:
+            x = x.cuda(device, non_blocking=True)
+
+            x = x.view(x.shape[0] * x.shape[1], *x.shape[2:])
+            out = classifier(x)
+            scores.append(out.cpu().numpy())
+            targets.append(y.view(-1).numpy())
+
+    scores = np.concatenate(scores, axis=0)
+    targets = np.concatenate(targets, axis=0)
+
+    return scores, targets
+
+
 def run(run_id, train_patients, test_patients, args):
     print('Train patient ids:', train_patients)
     print('Test patient ids:', test_patients)
@@ -366,7 +503,41 @@ def run(run_id, train_patients, test_patients, args):
 
     train_dataset = RPDataset(data_path=args.data_path, data_name=args.data_name, num_sampling=args.num_sampling,
                               dis=args.dis, patients=train_patients)
-    print(train_dataset[0])
+
+    pretrain(model, train_dataset, args.device, run_id, args)
+
+    del train_dataset
+
+    train_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, train_patients,
+                                                     label_dim=args.label_dim)
+
+    if args.finetune_mode == 'freeze':
+        use_dropout = False
+        use_l2_norm = False
+        use_final_bn = True
+    else:
+        use_dropout = True
+        use_l2_norm = False
+        use_final_bn = False
+
+    classifier = SimpleClassifier(input_size=input_size, input_channels=args.input_channel,
+                                  feature_dim=args.feature_dim, num_classes=args.classes,
+                                  use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                  device=args.device)
+    classifier.cuda(args.device)
+
+    classifier.load_state_dict(model.state_dict(), strict=False)
+
+    # Evaluation
+    del train_dataset
+    test_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, test_patients,
+                                                    label_dim=args.label_dim)
+    print(test_dataset)
+    scores, targets = evaluate(classifier, test_dataset, args.device, args)
+    performance = get_performance(scores, targets)
+    with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
+        pickle.dump({'performance': performance, 'args': vars(args), 'cmd': sys.argv}, f)
+    print(performance)
 
 
 if __name__ == '__main__':
