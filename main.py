@@ -74,8 +74,6 @@ def parse_args(verbose=True):
     parser.add_argument('--wd', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.9, help='Only valid for SGD optimizer')
 
-    parser.add_argument('--num-patients', type=int)
-
     parser.add_argument('--seed', type=int, default=2020)
 
     args_parsed = parser.parse_args()
