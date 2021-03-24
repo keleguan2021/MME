@@ -23,6 +23,14 @@ SEED_NUM_SUBJECT = 45
 SEED_SAMPLING_RATE = 200
 SEED_LABELS = [2, 1, 0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 1, 2, 0]
 
+SEED_IV_NUM_SUBJECT = 45
+SEED_IV_SAMPLING_RATE = 200
+SEED_IV_LABELS = [
+    [1, 2, 3, 0, 2, 0, 0, 1, 0, 1, 2, 1, 1, 1, 2, 3, 2, 2, 3, 3, 0, 3, 0, 3],
+    [2, 1, 3, 0, 0, 2, 0, 2, 3, 3, 2, 3, 2, 0, 1, 1, 2, 1, 0, 3, 0, 1, 3, 1],
+    [1, 2, 2, 1, 3, 3, 3, 1, 1, 2, 1, 0, 2, 3, 3, 0, 2, 3, 0, 0, 2, 0, 1, 0]
+]
+
 DEAP_NUM_SUBJECT = 32
 DEAP_SAMPLING_RATE = 128
 
@@ -58,9 +66,13 @@ class SEEDDataset(Dataset):
                 trial_data = np.swapaxes(trial_data, 0, 1)
                 # Shape: (num_seq, channel, time_len)
 
-                if trial_data.shape[0] % num_seq != 0:
-                    trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
-                trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
+                if num_seq == 0:
+                    trial_data = np.expand_dims(trial_data, axis=1)
+                else:
+                    if trial_data.shape[0] % num_seq != 0:
+                        trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
+                    trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
+
                 trial_label = np.full(shape=trial_data.shape[:2], fill_value=SEED_LABELS[i])
 
                 # Final shape: (num_sample, num_seq, channel, time_len)
@@ -72,6 +84,11 @@ class SEEDDataset(Dataset):
             all_label.append(subject_label)
         all_data = np.concatenate(all_data, axis=0)
         all_label = np.concatenate(all_label, axis=0)
+
+        if num_seq == 0:
+            all_data = np.squeeze(all_data)
+            # all_label = np.squeeze(all_label)
+
         print(all_data.shape)
         print(all_label.shape)
 
@@ -96,36 +113,43 @@ class SEEDDataset(Dataset):
 
 class SEEDIVDataset(Dataset):
     def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
-        files = sorted(os.listdir(data_path))
-        assert len(files) == SEED_NUM_SUBJECT
-        files = [files[i] for i in subject_list]
+        files = sorted(os.listdir(os.path.join(data_path, '1'))) + \
+                sorted(os.listdir(os.path.join(data_path, '2'))) + \
+                sorted(os.listdir(os.path.join(data_path, '3')))
+        files_with_session = list(zip([1] * 15 + [2] * 15 + [3] * 15, files))
+        assert len(files_with_session) == SEED_IV_NUM_SUBJECT
+        files_with_session = [files_with_session[i] for i in subject_list]
+        print(files_with_session)
 
         all_data = []
         all_label = []
         # Enumerate all files
-        for a_file in tqdm(files):
-            data = sio.loadmat(os.path.join(data_path, a_file))
+        for i_session, a_file in tqdm(files_with_session):
+            data = sio.loadmat(os.path.join(data_path, f'{i_session}', a_file))
             # Each file contains 15 consecutive trials
             movie_ids = list(filter(lambda x: not x.startswith('__'), data.keys()))
             subject_data = []
             subject_label = []
-            assert len(movie_ids) == len(SEED_LABELS)
+            assert len(movie_ids) == len(SEED_IV_LABELS[i_session - 1])
 
             for i, key in enumerate(movie_ids):
                 trial_data = data[key]
                 trial_data = trial_data[:, :-1]  # remove the last redundant point
                 # trial_data = tensor_standardize(trial_data, dim=-1)
-                assert trial_data.shape[1] % SEED_SAMPLING_RATE == 0
+                assert trial_data.shape[1] % SEED_IV_SAMPLING_RATE == 0
 
-                trial_data = trial_data.reshape(trial_data.shape[0], trial_data.shape[1] // SEED_SAMPLING_RATE,
-                                                SEED_SAMPLING_RATE)
+                trial_data = trial_data.reshape(trial_data.shape[0], trial_data.shape[1] // SEED_IV_SAMPLING_RATE,
+                                                SEED_IV_SAMPLING_RATE)
                 trial_data = np.swapaxes(trial_data, 0, 1)
                 # Shape: (num_seq, channel, time_len)
 
-                if trial_data.shape[0] % num_seq != 0:
-                    trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
-                trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
-                trial_label = np.full(shape=trial_data.shape[:2], fill_value=SEED_LABELS[i])
+                if num_seq == 0:
+                    trial_data = np.expand_dims(trial_data, axis=1)
+                else:
+                    if trial_data.shape[0] % num_seq != 0:
+                        trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
+                    trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
+                trial_label = np.full(shape=trial_data.shape[:2], fill_value=SEED_IV_LABELS[i_session - 1][i])
 
                 # Final shape: (num_sample, num_seq, channel, time_len)
                 subject_data.append(trial_data)
@@ -136,15 +160,20 @@ class SEEDIVDataset(Dataset):
             all_label.append(subject_label)
         all_data = np.concatenate(all_data, axis=0)
         all_label = np.concatenate(all_label, axis=0)
+
+        if num_seq == 0:
+            all_data = np.squeeze(all_data)
+            # all_label = np.squeeze(all_label)
+
         print(all_data.shape)
         print(all_label.shape)
 
-        self.data = all_data
-        self.labels = all_label
+        self.data = all_data.astype(np.float32)
+        self.labels = all_label.astype(np.long)
 
     def __getitem__(self, idx):
-        x = self.data[idx].astype(np.float32)
-        y = self.labels[idx].astype(np.long)
+        x = self.data[idx]
+        y = self.labels[idx]
 
         return torch.from_numpy(x), torch.from_numpy(y)
 
@@ -169,13 +198,16 @@ class DEAPDataset(Dataset):
             # subject_data = tensor_standardize(subject_data, dim=-1)
 
             subject_data = subject_data.reshape(*subject_data.shape[:2], subject_data.shape[-1] // DEAP_SAMPLING_RATE,
-                                                DEAP_SAMPLING_RATE)
-            subject_data = np.swapaxes(subject_data, 1, 2)
+                                                DEAP_SAMPLING_RATE)  # (trial, channel, num_sec, time_len)
+            subject_data = np.swapaxes(subject_data, 1, 2)  # (trial, num_sec, channel, time_len)
 
-            if subject_data.shape[1] % num_seq != 0:
-                subject_data = subject_data[:, :subject_data.shape[1] // num_seq * num_seq]
-            subject_data = subject_data.reshape(subject_data.shape[0], subject_data.shape[1] // num_seq, num_seq,
-                                                *subject_data.shape[-2:])
+            if num_seq == 0:
+                subject_data = np.expand_dims(subject_data, axis=2)
+            else:
+                if subject_data.shape[1] % num_seq != 0:
+                    subject_data = subject_data[:, :subject_data.shape[1] // num_seq * num_seq]
+                subject_data = subject_data.reshape(subject_data.shape[0], subject_data.shape[1] // num_seq, num_seq,
+                                                    *subject_data.shape[-2:])
 
             subject_label = np.repeat(np.expand_dims(subject_label, axis=1), subject_data.shape[1], axis=1)
             subject_label = np.repeat(np.expand_dims(subject_label, axis=2), subject_data.shape[2], axis=2)
@@ -188,6 +220,11 @@ class DEAPDataset(Dataset):
             all_labels.append(subject_label)
         all_data = np.concatenate(all_data, axis=0)
         all_labels = np.concatenate(all_labels, axis=0)
+
+        if num_seq == 0:
+            all_data = np.squeeze(all_data)
+            # all_labels = np.squeeze(all_labels)
+
         print(all_data.shape)
         print(all_labels.shape)
 
@@ -287,10 +324,12 @@ class AMIGOSDataset(Dataset):
 if __name__ == '__main__':
     base_path = '/data/DataHub/EmotionRecognition'
 
-    # dataset = DEAPDataset(os.path.join(base_path, 'DEAP', 'signal'), num_seq=10,
+    # dataset = DEAPDataset(os.path.join(base_path, 'DEAP', 'signal'), num_seq=0,
     #                       subject_list=[i for i in range(DEAP_NUM_SUBJECT // 10 * 9)])
-    dataset = SEEDDataset(os.path.join(base_path, 'SEED', 'Preprocessed_EEG'), num_seq=10,
+    dataset = SEEDDataset(os.path.join(base_path, 'SEED', 'Preprocessed_EEG'), num_seq=0,
                           subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
+    # dataset = SEEDIVDataset(os.path.join(base_path, 'SEED-IV', 'eeg_raw_data'), num_seq=0,
+    #                         subject_list=[i for i in range(SEED_IV_NUM_SUBJECT // 10 * 9)])
     # dataset = AMIGOSDataset(os.path.join(base_path, 'AMIGOS', 'signal'), num_seq=10,
     #                         subject_list=[i for i in range(AMIGOS_NUM_SUBJECT // 10 * 9)])
     print(dataset[np.random.randint(low=0, high=len(dataset))])
