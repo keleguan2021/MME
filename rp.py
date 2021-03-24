@@ -145,7 +145,7 @@ class RPDataset(Dataset):
 
             if data_name == 'SEED':
                 # Each file contains 15 consecutive trials
-                movie_ids = sorted(list(filter(lambda x: not x.startswith('__'), data.keys())))
+                movie_ids = list(filter(lambda x: not x.startswith('__'), data.keys()))
                 subject_data = []
                 subject_label = []
                 assert len(movie_ids) == len(SEED_LABELS)
