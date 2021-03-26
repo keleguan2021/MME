@@ -20,7 +20,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 from statsmodels.tsa.stattools import adfuller
 from sklearn.model_selection import KFold
 from tqdm.std import tqdm
@@ -171,13 +171,12 @@ class CPC(nn.Module):
 
 
 class CPCClassifier(nn.Module):
-    def __init__(self, network, input_channels, hidden_channels, feature_dim, pred_steps, num_class,
+    def __init__(self, input_size, input_channels, feature_dim, pred_steps, num_class,
                  use_l2_norm, use_dropout, use_batch_norm, device):
         super(CPCClassifier, self).__init__()
 
-        self.network = network
+        self.input_size = input_size
         self.input_channels = input_channels
-        self.hidden_channels = hidden_channels
         self.feature_dim = feature_dim
         self.pred_steps = pred_steps
         self.device = device
@@ -185,24 +184,10 @@ class CPCClassifier(nn.Module):
         self.use_dropout = use_dropout
         self.use_batch_norm = use_batch_norm
 
-        if network == 'r1d':
-            self.encoder = R1DNet(input_channels, hidden_channels, feature_dim, stride=2, kernel_size=[7, 11, 11, 7],
-                                  final_fc=False)
-            feature_size = self.encoder.feature_size
-            self.feature_size = feature_size
-            self.agg = ConvGRU1d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
-                                 num_layers=1, device=device)
-        elif network == 'r2d':
-            self.encoder = R2DNet(input_channels, hidden_channels, feature_dim, stride=[(2, 2), (1, 1), (1, 1), (1, 1)],
-                                  final_fc=False)
-            feature_size = self.encoder.feature_size
-            self.feature_size = feature_size
-            self.agg = ConvGRU2d(input_size=feature_size, hidden_size=feature_size, kernel_size=3,
-                                 num_layers=1, device=device)
-        else:
-            raise ValueError
+        self.encoder = Encoder(input_size, input_channels, feature_dim)
+        # self.agg = nn.GRU(input_size=feature_dim, hidden_size=feature_dim, batch_first=True)
 
-        self.relu = nn.ReLU(inplace=True)
+        # self.relu = nn.ReLU(inplace=True)
 
         final_fc = []
 
@@ -210,7 +195,7 @@ class CPCClassifier(nn.Module):
             final_fc.append(nn.BatchNorm1d(self.feature_size))
         if use_dropout:
             final_fc.append(nn.Dropout(0.5))
-        final_fc.append(nn.Linear(feature_size, num_class))
+        final_fc.append(nn.Linear(feature_dim, num_class))
         self.final_fc = nn.Sequential(*final_fc)
 
         # self._initialize_weights(self.final_fc)
@@ -219,26 +204,15 @@ class CPCClassifier(nn.Module):
         batch_size, num_epoch, channel, time_len = x.shape
         x = x.view(batch_size * num_epoch, channel, time_len)
         feature = self.encoder(x)
-        feature = self.relu(feature)
-        if self.network == 'r1d':
-            feature = F.avg_pool1d(feature, kernel_size=(1,), stride=(1,))
-        else:
-            feature = F.avg_pool2d(feature, kernel_size=(1, 1), stride=(1, 1))
-        last_size = np.prod(feature.shape) // batch_size // num_epoch // self.feature_size
-        assert batch_size * num_epoch * self.feature_size * last_size == np.prod(feature.shape)
-        feature = feature.view(batch_size, num_epoch, self.feature_size, last_size)
 
-        context, _ = self.agg(feature)
-        context = context[:, -1, :]
-        # print('1. Context: ', context.shape)
-        context = F.avg_pool1d(context, (last_size,), stride=1).squeeze()
+        # feature = feature.view(batch_size, num_epoch, self.feature_dim)
 
         # print('2. Context: ', context.shape)
 
         if self.use_l2_norm:
-            context = F.normalize(context, p=2, dim=1)
+            feature = F.normalize(feature, p=2, dim=-1)
 
-        out = self.final_fc(context)
+        out = self.final_fc(feature)
 
         # print('3. Out: ', out.shape)
 
@@ -283,8 +257,64 @@ def pretrain(run_id, model, dataset, device, args):
                 progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
 
-def finetune():
-    pass
+def finetune(classifier, dataset, device, args):
+    params = []
+    if args.finetune_mode == 'freeze':
+        print('[INFO] Finetune classifier only for the last layer...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name:
+                param.requires_grad = False
+            else:
+                params.append({'params': param})
+    elif args.finetune_mode == 'smaller':
+        print('[INFO] Finetune the whole classifier where the backbone have a smaller lr...')
+        for name, param in classifier.named_parameters():
+            if 'encoder' in name:
+                params.append({'params': param, 'lr': args.lr / 10})
+            else:
+                params.append({'params': param})
+    else:
+        print('[INFO] Finetune the whole classifier...')
+        for name, param in classifier.named_parameters():
+            params.append({'params': param})
+
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(params, lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
+    else:
+        raise ValueError('Invalid optimizer!')
+
+    criterion = nn.CrossEntropyLoss().cuda(device)
+
+    sampled_indices = np.arange(len(dataset))
+    np.random.shuffle(sampled_indices)
+    sampled_indices = sampled_indices[:int(len(sampled_indices) * args.finetune_ratio)]
+    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                             shuffle=False, pin_memory=True, drop_last=True,
+                             sampler=SubsetRandomSampler(sampled_indices))
+
+    classifier.train()
+    for epoch in range(args.finetune_epochs):
+        losses = []
+        accuracies = []
+        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.finetune_epochs}]') as progress_bar:
+            for x, y in progress_bar:
+                x, y = x.cuda(device, non_blocking=True), y.cuda(device, non_blocking=True)
+
+                out = classifier(x)
+                loss = criterion(out.view(args.batch_size * args.num_seq, -1), y.view(-1))
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                losses.append(loss.item())
+                accuracies.append(
+                    logits_accuracy(out.view(args.batch_size * args.num_seq, -1), y.view(-1), topk=(1,))[0])
+
+                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
 
 def evaluate():
@@ -311,6 +341,26 @@ def run(run_id, train_patients, test_patients, args):
     train_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, train_patients,
                                                      label_dim=args.label_dim)
     pretrain(run_id, model, train_dataset, args.device, args)
+
+    # Finetuning
+    if args.finetune_mode == 'freeze':
+        use_dropout = False
+        use_l2_norm = True
+        use_final_bn = True
+    else:
+        use_dropout = True
+        use_l2_norm = False
+        use_final_bn = False
+
+    classifier = CPCClassifier(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
+                               num_class=args.classes, use_dropout=use_dropout, use_l2_norm=use_l2_norm,
+                               use_batch_norm=use_final_bn,
+                               device=args.device)
+    classifier.cuda(args.device)
+
+    classifier.load_state_dict(model.state_dict(), strict=False)
+
+    finetune(classifier, train_dataset, args.device, args)
 
 
 if __name__ == '__main__':
