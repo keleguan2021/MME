@@ -321,13 +321,71 @@ class AMIGOSDataset(Dataset):
         return len(self.data)
 
 
-if __name__ == '__main__':
-    base_path = '/data/DataHub/EmotionRecognition'
+class SEEDSSTDataset(Dataset):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
+        files = sorted(os.listdir(data_path))
+        assert len(files) == SEED_NUM_SUBJECT
+        files = [files[i] for i in subject_list]
 
+        all_data = []
+        all_label = []
+        # Enumerate all files
+        for a_file in tqdm(files):
+            data = sio.loadmat(os.path.join(data_path, a_file))
+            # Each file contains 15 consecutive trials
+            movie_ids = list(filter(lambda x: not x.startswith('__'), data.keys()))
+
+            subject_data = []
+            subject_label = []
+            assert len(movie_ids) == len(SEED_LABELS)
+
+            for i, key in enumerate(movie_ids):
+                trial_data = data[key]
+                # trial_data = tensor_standardize(trial_data, dim=-1)
+                assert trial_data.shape[0] % SEED_SAMPLING_RATE == 0
+
+                trial_data = trial_data.reshape(trial_data.shape[0] // SEED_IV_SAMPLING_RATE, SEED_IV_SAMPLING_RATE,
+                                                *trial_data.shape[1:])
+
+                if num_seq == 0:
+                    trial_data = np.expand_dims(trial_data, axis=1)
+                else:
+                    if trial_data.shape[0] % num_seq != 0:
+                        trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
+                    trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
+
+                trial_label = np.full(shape=trial_data.shape[:2], fill_value=SEED_LABELS[i])
+
+                trial_data = np.expand_dims(trial_data, axis=2)  # add the channel dim
+
+                # Final shape: (num_sample, num_seq, channel, time_len, width, height)
+                subject_data.append(trial_data)
+                subject_label.append(trial_label)
+            subject_data = np.concatenate(subject_data, axis=0)
+            subject_label = np.concatenate(subject_label, axis=0)
+            all_data.append(subject_data)
+            all_label.append(subject_label)
+        all_data = np.concatenate(all_data, axis=0)
+        all_label = np.concatenate(all_label, axis=0)
+
+        print(all_data.shape)
+        print(all_label.shape)
+
+
+if __name__ == '__main__':
+    base_path = 'data/sst_feature/SEED/raw'
+
+    # SST features
+    dataset = SEEDSSTDataset(os.path.join(base_path), num_seq=10,
+                             subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
+
+    # base_path = '/data/DataHub/EmotionRecognition'
+
+    # Raw features
     # dataset = DEAPDataset(os.path.join(base_path, 'DEAP', 'signal'), num_seq=0,
     #                       subject_list=[i for i in range(DEAP_NUM_SUBJECT // 10 * 9)])
-    dataset = SEEDDataset(os.path.join(base_path, 'SEED', 'Preprocessed_EEG'), num_seq=0,
-                          subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
+    # dataset = SEEDDataset(os.path.join(base_path, 'SEED', 'Preprocessed_EEG'), num_seq=0,
+    #                       subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
     # dataset = SEEDIVDataset(os.path.join(base_path, 'SEED-IV', 'eeg_raw_data'), num_seq=0,
     #                         subject_list=[i for i in range(SEED_IV_NUM_SUBJECT // 10 * 9)])
     # dataset = AMIGOSDataset(os.path.join(base_path, 'AMIGOS', 'signal'), num_seq=10,
