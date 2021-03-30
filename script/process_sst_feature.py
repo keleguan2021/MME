@@ -172,10 +172,11 @@ if __name__ == '__main__':
                     subject_raw_data[key] = trial_raw_data
             if num_session == 1:
                 # sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
-                np.savez(os.path.join(args.dest_path, 'raw', a_file), **subject_raw_data)
+                np.savez(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0] + '.npz'), **subject_raw_data)
             else:
                 # sio.savemat(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), subject_raw_data)
-                np.savez(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), **subject_raw_data)
+                np.savez(os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
+                         **subject_raw_data)
 
             subject_feature_data = {}
 
@@ -224,7 +225,9 @@ if __name__ == '__main__':
                     subject_feature_data[key] = trial_feature_data
             if num_session == 1:
                 # sio.savemat(os.path.join(args.dest_path, 'feature', a_file), subject_feature_data)
-                np.savez(os.path.join(args.dest_path, 'feature', a_file), **subject_feature_data)
+                np.savez(os.path.join(args.dest_path, 'feature', os.path.splitext(a_file)[0] + '.npz'),
+                         **subject_feature_data)
             else:
                 # sio.savemat(os.path.join(args.dest_path, 'feature', f'{i_session}', a_file), subject_feature_data)
-                np.savez(os.path.join(args.dest_path, 'feature', f'{i_session}', a_file), **subject_feature_data)
+                np.savez(os.path.join(args.dest_path, 'feature', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
+                         **subject_feature_data)
