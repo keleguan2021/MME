@@ -19,7 +19,9 @@ from scipy import interpolate
 SEED_NUM_SUBJECT = 45
 SEED_SAMPLING_RATE = 200
 SEED_LABELS = [2, 1, 0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 1, 2, 0]
-SEED_CHANNEL_MAP = {}
+
+SEED_IV_NUM_SUBJECT = 15
+SEED_IV_SAMPLING_RATE = 200
 
 DEAP_NUM_SUBJECT = 32
 DEAP_SAMPLING_RATE = 128
@@ -59,13 +61,16 @@ if __name__ == '__main__':
     if not os.path.exists(os.path.join(args.dest_path, 'feature')):
         os.makedirs(os.path.join(args.dest_path, 'feature'))
 
-    files = sorted(os.listdir(args.raw_path))
-    assert len(files) == SEED_NUM_SUBJECT
-
-    for a_file in files:
-        assert os.path.exists(os.path.join(args.feature_path, a_file))
+    if args.data_name == 'SEED-IV':
+        for i in range(3):
+            if not os.path.exists(os.path.join(args.dest_path, 'raw', f'{i + 1}')):
+                os.makedirs(os.path.join(args.dest_path, 'raw', f'{i + 1}'))
+            if not os.path.exists(os.path.join(args.dest_path, 'feature', f'{i + 1}')):
+                os.makedirs(os.path.join(args.dest_path, 'feature', f'{i + 1}'))
 
     channel_map = {}
+
+    num_session = 1
 
     if args.data_name == 'SEED' or args.data_name == 'SEED-IV':
         for i in range(3):
@@ -82,6 +87,9 @@ if __name__ == '__main__':
 
         for i in range(57, 62):
             channel_map[i] = (8, i - 57 + 2)
+
+        if args.data_name == 'SEED-IV':
+            num_session = 3
     else:
         raise ValueError
 
@@ -95,77 +103,47 @@ if __name__ == '__main__':
     all_feature_data = []
 
     # Enumerate all files
-    for a_file in files:
-        print(f'[INFO] Processing file {a_file}...')
+    for i_session in range(1, num_session + 1):
+        print(f'[INFO] Processing {i_session}-th session...')
+        if num_session == 1:
+            files = sorted(os.listdir(args.raw_path))
+            assert len(files) == SEED_NUM_SUBJECT
+        else:
+            files = sorted(os.listdir(os.path.join(args.raw_path, f'{i_session}')))
+            assert len(files) == SEED_IV_NUM_SUBJECT
 
-        raw_dict = sio.loadmat(os.path.join(args.raw_path, a_file))
-        feature_dict = sio.loadmat(os.path.join(args.feature_path, a_file))
+        for a_file in files:
+            print(f'[INFO] Processing file {a_file}...')
 
-        print(raw_dict.keys())
-        print(feature_dict.keys())
+            if num_session == 1:
+                assert os.path.exists(os.path.join(args.feature_path, a_file))
+                raw_dict = sio.loadmat(os.path.join(args.raw_path, a_file))
+                feature_dict = sio.loadmat(os.path.join(args.feature_path, a_file))
+            else:
+                assert os.path.exists(os.path.join(args.feature_path, f'{i_session}', a_file))
+                raw_dict = sio.loadmat(os.path.join(args.raw_path, f'{i_session}', a_file))
+                feature_dict = sio.loadmat(os.path.join(args.feature_path, f'{i_session}', a_file))
 
-        subject_raw_data = {}
+            print(raw_dict.keys())
+            print(feature_dict.keys())
 
-        print(f'[INFO] Processing raw data...')
-        for key in raw_dict.keys():
-            if 'eeg' in key:
-                current_data = raw_dict[key]
-                current_data = current_data[:, :-1]  # Exclude the last point
+            subject_raw_data = {}
 
-                current_data = (current_data - current_data.mean(axis=0)) / current_data.std(axis=0)
+            print(f'[INFO] Processing raw data...')
+            for key in raw_dict.keys():
+                if 'eeg' in key:
+                    current_data = raw_dict[key]
+                    current_data = current_data[:, :-1]  # Exclude the last point
 
-                points = np.array([value[0] * 9 + value[1] for value in channel_map.values()])
-                values = np.zeros((9, 9))
+                    current_data = (current_data - current_data.mean(axis=0)) / current_data.std(axis=0)
 
-                trial_raw_data = []
+                    points = np.array([value[0] * 9 + value[1] for value in channel_map.values()])
+                    values = np.zeros((9, 9))
 
-                for ts in tqdm(range(current_data.shape[-1]), desc=key):
-                    np.put(values, points, current_data[:, ts])
+                    trial_raw_data = []
 
-                    ############### Only for test ###############
-                    # plt.imshow(values)
-                    # plt.title('original_values')
-                    # plt.colorbar()
-                    # plt.show()
-                    ############### Only for test ###############
-
-                    #             grid_x, grid_y = np.meshgrid(np.arange(9), np.arange(9))
-                    #             interpolated_mat = interpolate.griddata(points, values, (grid_x, grid_y), method='cubic')
-                    #             interpolator = interpolate.interp2d(x=points[:,1], y=points[:,0], z=values, kind='cubic')
-                    interpolator = interpolate.interp2d(x=np.arange(9), y=np.arange(9), z=values, kind='cubic')
-                    interpolated_mat = interpolator(np.linspace(0, 8, 32), np.linspace(0, 8, 32))
-
-                    ############### Only for test ###############
-                    # print(points.shape)
-                    # print(interpolated_mat)
-                    # plt.imshow(interpolated_mat)
-                    # plt.title('interpolated_mat')
-                    # plt.colorbar()
-                    # plt.show()
-                    ############### Only for test ###############
-
-                    trial_raw_data.append(interpolated_mat)
-                trial_raw_data = np.stack(trial_raw_data, axis=0)
-                subject_raw_data[key] = trial_raw_data
-        sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
-
-        subject_feature_data = {}
-
-        print(f'[INFO] Processing feature data...')
-        for key in feature_dict.keys():
-            if key.startswith('de_LDS'):
-                current_data = feature_dict[key]
-                current_data = (current_data - current_data.mean(axis=1)[:, np.newaxis, :]) / current_data.std(axis=1)[
-                                                                                              :, np.newaxis, :]
-                points = np.array([value[0] * 9 + value[1] for value in channel_map.values()])
-                values = np.zeros((9, 9))
-
-                trial_feature_data = []
-
-                for ts in tqdm(range(current_data.shape[1]), desc=key):
-                    band_feature_data = []
-                    for i_feature in range(current_data.shape[-1]):
-                        np.put(values, points, current_data[:, ts, i_feature])
+                    for ts in tqdm(range(current_data.shape[-1]), desc=key):
+                        np.put(values, points, current_data[:, ts])
 
                         ############### Only for test ###############
                         # plt.imshow(values)
@@ -174,6 +152,9 @@ if __name__ == '__main__':
                         # plt.show()
                         ############### Only for test ###############
 
+                        #             grid_x, grid_y = np.meshgrid(np.arange(9), np.arange(9))
+                        #             interpolated_mat = interpolate.griddata(points, values, (grid_x, grid_y), method='cubic')
+                        #             interpolator = interpolate.interp2d(x=points[:,1], y=points[:,0], z=values, kind='cubic')
                         interpolator = interpolate.interp2d(x=np.arange(9), y=np.arange(9), z=values, kind='cubic')
                         interpolated_mat = interpolator(np.linspace(0, 8, 32), np.linspace(0, 8, 32))
 
@@ -186,11 +167,60 @@ if __name__ == '__main__':
                         # plt.show()
                         ############### Only for test ###############
 
-                        band_feature_data.append(interpolated_mat)
-                    band_feature_data = np.stack(band_feature_data, axis=-1)
-                    # print(band_feature_data.shape)
-                    trial_feature_data.append(band_feature_data)
-                trial_feature_data = np.stack(trial_feature_data, axis=-2)
-                # print(trial_feature_data.shape)
-                subject_feature_data[key] = trial_feature_data
-        sio.savemat(os.path.join(args.dest_path, 'feature', a_file), subject_feature_data)
+                        trial_raw_data.append(interpolated_mat)
+                    trial_raw_data = np.stack(trial_raw_data, axis=0)
+                    subject_raw_data[key] = trial_raw_data
+            if num_session == 1:
+                sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
+            else:
+                sio.savemat(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), subject_raw_data)
+
+            subject_feature_data = {}
+
+            print(f'[INFO] Processing feature data...')
+            for key in feature_dict.keys():
+                if key.startswith('de_LDS'):
+                    current_data = feature_dict[key]
+                    current_data = (current_data - current_data.mean(axis=1)[:, np.newaxis, :]) / current_data.std(
+                        axis=1)[
+                                                                                                  :, np.newaxis, :]
+                    points = np.array([value[0] * 9 + value[1] for value in channel_map.values()])
+                    values = np.zeros((9, 9))
+
+                    trial_feature_data = []
+
+                    for ts in tqdm(range(current_data.shape[1]), desc=key):
+                        band_feature_data = []
+                        for i_feature in range(current_data.shape[-1]):
+                            np.put(values, points, current_data[:, ts, i_feature])
+
+                            ############### Only for test ###############
+                            # plt.imshow(values)
+                            # plt.title('original_values')
+                            # plt.colorbar()
+                            # plt.show()
+                            ############### Only for test ###############
+
+                            interpolator = interpolate.interp2d(x=np.arange(9), y=np.arange(9), z=values, kind='cubic')
+                            interpolated_mat = interpolator(np.linspace(0, 8, 32), np.linspace(0, 8, 32))
+
+                            ############### Only for test ###############
+                            # print(points.shape)
+                            # print(interpolated_mat)
+                            # plt.imshow(interpolated_mat)
+                            # plt.title('interpolated_mat')
+                            # plt.colorbar()
+                            # plt.show()
+                            ############### Only for test ###############
+
+                            band_feature_data.append(interpolated_mat)
+                        band_feature_data = np.stack(band_feature_data, axis=-1)
+                        # print(band_feature_data.shape)
+                        trial_feature_data.append(band_feature_data)
+                    trial_feature_data = np.stack(trial_feature_data, axis=-2)
+                    # print(trial_feature_data.shape)
+                    subject_feature_data[key] = trial_feature_data
+            if num_session == 1:
+                sio.savemat(os.path.join(args.dest_path, 'feature', a_file), subject_feature_data)
+            else:
+                sio.savemat(os.path.join(args.dest_path, 'feature', f'{i_session}', a_file), subject_feature_data)
