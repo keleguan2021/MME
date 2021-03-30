@@ -354,8 +354,7 @@ def run(run_id, train_patients, test_patients, args):
 
     classifier = CPCClassifier(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
                                num_class=args.classes, use_dropout=use_dropout, use_l2_norm=use_l2_norm,
-                               use_batch_norm=use_final_bn,
-                               device=args.device)
+                               use_batch_norm=use_final_bn, device=args.device)
     classifier.cuda(args.device)
 
     classifier.load_state_dict(model.state_dict(), strict=False)
