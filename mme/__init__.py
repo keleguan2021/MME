@@ -1,4 +1,4 @@
-from .backbone import Encoder
+from .backbone import Encoder, ResNet2d3d
 from .dataset import SEEDDataset, DEAPDataset, AMIGOSDataset
 from .model import DCC, DCCClassifier, MME
 from .utils import (

@@ -206,8 +206,11 @@ class Bottleneck2d(nn.Module):
 
 
 class ResNet2d3d(nn.Module):
-    def __init__(self, input_channel, block=None, layers=None, track_running_stats=True):
+    def __init__(self, input_channel, feature_dim, block=None, layers=None, track_running_stats=True):
         super(ResNet2d3d, self).__init__()
+
+        self.input_channel = input_channel
+        self.feature_dim = feature_dim
 
         if layers is None:
             layers = [2, 2, 2, 2]

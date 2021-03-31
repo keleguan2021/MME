@@ -35,6 +35,7 @@ def parse_args(verbose=True):
     parser.add_argument('--feature-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/ExtractedFeatures')
     parser.add_argument('--dest-path', type=str, required=True)
     parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP', 'SEED-IV'])
+    parser.add_argument('--num-seq', type=int, default=10)
 
     args_parsed = parser.parse_args()
 
@@ -127,7 +128,7 @@ if __name__ == '__main__':
             print(raw_dict.keys())
             print(feature_dict.keys())
 
-            subject_raw_data = {}
+            # subject_raw_data = {}
 
             print(f'[INFO] Processing raw data...')
             for key in raw_dict.keys():
@@ -169,16 +170,50 @@ if __name__ == '__main__':
 
                         trial_raw_data.append(interpolated_mat)
                     trial_raw_data = np.stack(trial_raw_data, axis=0)
-                    subject_raw_data[key] = trial_raw_data
-            if num_session == 1:
-                # sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
-                np.savez(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0] + '.npz'), **subject_raw_data)
-            else:
-                # sio.savemat(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), subject_raw_data)
-                np.savez(os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
-                         **subject_raw_data)
+                    # subject_raw_data[key] = trial_raw_data
 
-            subject_feature_data = {}
+                    if args.data_name == 'SEED':
+                        assert trial_raw_data.shape[0] % SEED_SAMPLING_RATE == 0
+                        trial_raw_data = trial_raw_data.reshape(trial_raw_data.shape[0] // SEED_SAMPLING_RATE,
+                                                                SEED_SAMPLING_RATE, *trial_raw_data.shape[1:])
+                    elif args.data_name == 'SEED-IV':
+                        assert trial_raw_data.shape[0] % SEED_IV_SAMPLING_RATE == 0
+                        trial_raw_data = trial_raw_data.reshape(trial_raw_data.shape[0] // SEED_IV_SAMPLING_RATE,
+                                                                SEED_IV_SAMPLING_RATE, *trial_raw_data.shape[1:])
+                    elif args.data_name == 'DEAP':
+                        assert trial_raw_data.shape[0] % DEAP_SAMPLING_RATE == 0
+                        trial_raw_data = trial_raw_data.reshape(trial_raw_data.shape[0] // DEAP_SAMPLING_RATE,
+                                                                DEAP_SAMPLING_RATE, *trial_raw_data.shape[1:])
+                    else:
+                        raise ValueError
+
+                    if trial_raw_data.shape[0] % args.num_seq != 0:
+                        trial_raw_data = trial_raw_data[:trial_raw_data.shape[0] // args.num_seq * args.num_seq]
+                    trial_raw_data = trial_raw_data.reshape(trial_raw_data.shape[0] // args.num_seq, args.num_seq,
+                                                            *trial_raw_data.shape[1:])
+
+                    if num_session == 1:
+                        if not os.path.exists(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0])):
+                            os.makedirs(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0]))
+                        # sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
+                        # np.savez(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0] + '.npz'), **subject_raw_data)
+
+                        for i in range(trial_raw_data.shape[0]):
+                            np.save(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0], key + f'_{i}.npy'),
+                                    trial_raw_data[i])
+                    else:
+                        if not os.path.exists(
+                                os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0])):
+                            os.makedirs(
+                                os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0]))
+                        # sio.savemat(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), subject_raw_data)
+                        # np.savez(os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
+                        #          **subject_raw_data)
+                        for i in range(trial_raw_data.shape[0]):
+                            np.save(os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0],
+                                                 key + f'_{i}.npy'), trial_raw_data[i])
+
+            # subject_feature_data = {}
 
             print(f'[INFO] Processing feature data...')
             for key in feature_dict.keys():
@@ -217,17 +252,41 @@ if __name__ == '__main__':
                             ############### Only for test ###############
 
                             band_feature_data.append(interpolated_mat)
-                        band_feature_data = np.stack(band_feature_data, axis=-1)
+                        band_feature_data = np.stack(band_feature_data, axis=0)
                         # print(band_feature_data.shape)
                         trial_feature_data.append(band_feature_data)
-                    trial_feature_data = np.stack(trial_feature_data, axis=-2)
+                    trial_feature_data = np.stack(trial_feature_data, axis=0)
                     # print(trial_feature_data.shape)
-                    subject_feature_data[key] = trial_feature_data
-            if num_session == 1:
-                # sio.savemat(os.path.join(args.dest_path, 'feature', a_file), subject_feature_data)
-                np.savez(os.path.join(args.dest_path, 'feature', os.path.splitext(a_file)[0] + '.npz'),
-                         **subject_feature_data)
-            else:
-                # sio.savemat(os.path.join(args.dest_path, 'feature', f'{i_session}', a_file), subject_feature_data)
-                np.savez(os.path.join(args.dest_path, 'feature', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
-                         **subject_feature_data)
+                    # subject_feature_data[key] = trial_feature_data
+
+                    # Final shape: (num_sec, freq_len, width, height)
+                    print(trial_feature_data.shape)
+
+                    if trial_feature_data.shape[0] % args.num_seq != 0:
+                        trial_feature_data = trial_feature_data[
+                                             :trial_feature_data.shape[0] // args.num_seq * args.num_seq]
+                    trial_feature_data = trial_feature_data.reshape(trial_feature_data.shape[0] // args.num_seq,
+                                                                    args.num_seq,
+                                                                    *trial_feature_data.shape[1:])
+
+                    if num_session == 1:
+                        if not os.path.exists(os.path.join(args.dest_path, 'feature', os.path.splitext(a_file)[0])):
+                            os.makedirs(os.path.join(args.dest_path, 'feature', os.path.splitext(a_file)[0]))
+                        # sio.savemat(os.path.join(args.dest_path, 'raw', a_file), subject_raw_data)
+                        # np.savez(os.path.join(args.dest_path, 'raw', os.path.splitext(a_file)[0] + '.npz'), **subject_raw_data)
+
+                        for i in range(trial_feature_data.shape[0]):
+                            np.save(
+                                os.path.join(args.dest_path, 'feature', os.path.splitext(a_file)[0], key + f'_{i}.npy'),
+                                trial_feature_data[i])
+                    else:
+                        if not os.path.exists(
+                                os.path.join(args.dest_path, 'feature', f'{i_session}', os.path.splitext(a_file)[0])):
+                            os.makedirs(
+                                os.path.join(args.dest_path, 'feature', f'{i_session}', os.path.splitext(a_file)[0]))
+                        # sio.savemat(os.path.join(args.dest_path, 'raw', f'{i_session}', a_file), subject_raw_data)
+                        # np.savez(os.path.join(args.dest_path, 'raw', f'{i_session}', os.path.splitext(a_file)[0] + '.npz'),
+                        #          **subject_raw_data)
+                        for i in range(trial_feature_data.shape[0]):
+                            np.save(os.path.join(args.dest_path, 'feature', f'{i_session}', os.path.splitext(a_file)[0],
+                                                 key + f'_{i}.npy'), trial_feature_data[i])

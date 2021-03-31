@@ -331,7 +331,8 @@ class SEEDSSTDataset(Dataset):
         all_label = []
         # Enumerate all files
         for a_file in tqdm(files):
-            data = sio.loadmat(os.path.join(data_path, a_file))
+            # data = sio.loadmat(os.path.join(data_path, a_file))
+            data = np.load(os.path.join(data_path, a_file))
             # Each file contains 15 consecutive trials
             movie_ids = list(filter(lambda x: not x.startswith('__'), data.keys()))
 
