@@ -6,6 +6,8 @@
 @Software: PyCharm
 @Desc    : 
 """
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -206,12 +208,17 @@ class Bottleneck2d(nn.Module):
 
 
 class ResNet2d3d(nn.Module):
-    def __init__(self, input_channel, feature_dim, block=None, layers=None, track_running_stats=True):
+    def __init__(self, input_channel, input_size, feature_dim, strides=None, block=None, layers=None, use_final_fc=True,
+                 track_running_stats=True):
         super(ResNet2d3d, self).__init__()
 
         self.input_channel = input_channel
+        self.input_size = list(input_size)
         self.feature_dim = feature_dim
+        self.use_final_fc = use_final_fc
 
+        if strides is None:
+            strides = [1, 1, 2, 2]
         if layers is None:
             layers = [2, 2, 2, 2]
         if block is None:
@@ -228,10 +235,32 @@ class ResNet2d3d(nn.Module):
         if not isinstance(block, list):
             block = [block] * 4
 
-        self.layer1 = self._make_layer(block[0], 64, layers[0])
-        self.layer2 = self._make_layer(block[1], 128, layers[1], stride=2)
-        self.layer3 = self._make_layer(block[2], 256, layers[2], stride=2)
-        self.layer4 = self._make_layer(block[3], 256, layers[3], stride=2, is_final=True)
+        self.layer1 = self._make_layer(block[0], 64, layers[0], stride=strides[0])
+        self.layer2 = self._make_layer(block[1], 128, layers[1], stride=strides[1])
+        self.layer3 = self._make_layer(block[2], 256, layers[2], stride=strides[2])
+        self.layer4 = self._make_layer(block[3], 256, layers[3], stride=strides[3], is_final=True)
+
+        self.input_size[1] = int(math.ceil(self.input_size[1] / 4))
+        self.input_size[2] = int(math.ceil(self.input_size[2] / 4))
+        for idx, block_item in enumerate(block):
+            if block_item == BasicBlock2d:
+                self.input_size[1] = int(math.ceil(self.input_size[1] / strides[idx]))
+                self.input_size[2] = int(math.ceil(self.input_size[2] / strides[idx]))
+            elif block_item == BasicBlock3d:
+                self.input_size[0] = int(math.ceil(self.input_size[0] / strides[idx]))
+                self.input_size[1] = int(math.ceil(self.input_size[1] / strides[idx]))
+                self.input_size[2] = int(math.ceil(self.input_size[2] / strides[idx]))
+            else:
+                raise ValueError
+
+        if use_final_fc:
+            self.final_fc = nn.Sequential(
+                nn.ReLU(inplace=True),
+                nn.Linear(self.input_size[0] * self.input_size[1] * self.input_size[2] * 256, feature_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(feature_dim, feature_dim)
+            )
+
         # modify layer4 from exp=512 to exp=256
         for m in self.modules():
             if isinstance(m, nn.Conv3d):
@@ -280,4 +309,14 @@ class ResNet2d3d(nn.Module):
         x = self.layer3(x)
         x = self.layer4(x)
 
+        if self.use_final_fc:
+            x = x.view(x.size(0), -1)
+            x = self.final_fc(x)
+
         return x
+
+
+if __name__ == '__main__':
+    model = ResNet2d3d(input_channel=1, strides=(1, 1, 2, 2), input_size=[5, 32, 32], feature_dim=128)
+    out = model(torch.randn(32, 1, 5, 32, 32))
+    print(out.shape)

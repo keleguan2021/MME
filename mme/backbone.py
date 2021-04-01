@@ -8,8 +8,8 @@
 """
 import torch
 
-from backbone_1d import Encoder, R1DNet
-from backbone_resnet3d import ResNet2d3d
+from .backbone_1d import Encoder, R1DNet
+from .backbone_resnet3d import ResNet2d3d
 
 if __name__ == '__main__':
     model = ResNet2d3d(input_channel=5, feature_dim=128)

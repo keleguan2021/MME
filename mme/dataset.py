@@ -351,12 +351,47 @@ class SEEDSSTDataset(Dataset):
         return len(self.all_files)
 
 
+class SEEDIVSSTDataset(Dataset):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
+        self.data_path = data_path
+        self.num_seq = num_seq
+        self.label_dim = label_dim
+
+        subjects = sorted(os.listdir(os.path.join(data_path, '1'))) + \
+                   sorted(os.listdir(os.path.join(data_path, '2'))) + \
+                   sorted(os.listdir(os.path.join(data_path, '3')))
+        subjects_with_session = list(zip([1] * 15 + [2] * 15 + [3] * 15, subjects))
+        assert len(subjects_with_session) == SEED_IV_NUM_SUBJECT
+        subjects_with_session = [subjects_with_session[i] for i in subject_list]
+
+        all_files = []
+
+        for a_session, a_subject in subjects_with_session:
+            files = sorted(os.listdir(os.path.join(data_path, f'{a_session}', a_subject)))
+            all_files += list(zip([a_session] * len(files), [a_subject] * len(files), files))
+
+        self.all_files = all_files
+
+    def __getitem__(self, item):
+        session, subject_name, filename = self.all_files[item]
+        data = np.load(os.path.join(self.data_path, f'{session}', subject_name, filename))
+        x = data['data'].astype(np.float32)
+        y = data['label'].astype(np.long)
+
+        return torch.from_numpy(x), torch.from_numpy(y)
+
+    def __len__(self):
+        return len(self.all_files)
+
+
 if __name__ == '__main__':
-    base_path = 'data/sst_feature/SEED/feature'
+    base_path = 'data/sst_feature/SEED-IV/feature'
 
     # SST features
-    dataset = SEEDSSTDataset(os.path.join(base_path), num_seq=10,
-                             subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
+    # dataset = SEEDSSTDataset(os.path.join(base_path), num_seq=10,
+    #                          subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
+    dataset = SEEDIVSSTDataset(os.path.join(base_path), num_seq=10,
+                               subject_list=[i for i in range(SEED_NUM_SUBJECT // 10 * 9)])
 
     # base_path = '/data/DataHub/EmotionRecognition'
 

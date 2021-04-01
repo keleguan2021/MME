@@ -14,7 +14,8 @@ from .backbone import Encoder, ResNet2d3d
 
 
 class DCC(nn.Module):
-    def __init__(self, input_size, input_channels, feature_dim, use_temperature, temperature, device):
+    def __init__(self, input_size, input_channels, feature_dim, use_temperature, temperature, device, strides=None,
+                 mode='raw'):
         super(DCC, self).__init__()
 
         self.input_size = input_size
@@ -23,15 +24,22 @@ class DCC(nn.Module):
         self.use_temperature = use_temperature
         self.temperature = temperature
         self.device = device
+        self.mode = mode
 
-        self.encoder = Encoder(input_size, input_channels, feature_dim)
+        if mode == 'raw':
+            self.encoder = Encoder(input_size, input_channels, feature_dim)
+        elif mode == 'sst':
+            self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+        else:
+            raise ValueError
+
         self.targets = None
 
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
-        batch_size, num_epoch, channel, time_len = x.shape
-        x = x.view(batch_size * num_epoch, channel, time_len)
+        batch_size, num_epoch, time_len, width, height = x.shape
+        x = x.view(batch_size * num_epoch, 1, *x.shape[2:])
         feature = self.encoder(x)
         feature = feature.view(batch_size, num_epoch, self.feature_dim)
         if self.use_temperature:
@@ -71,7 +79,7 @@ class DCC(nn.Module):
 
 class DCCClassifier(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, num_class, use_l2_norm, use_dropout, use_batch_norm,
-                 device):
+                 device, strides=None, mode='raw'):
         super(DCCClassifier, self).__init__()
 
         self.input_size = input_size
@@ -82,7 +90,12 @@ class DCCClassifier(nn.Module):
         self.use_dropout = use_dropout
         self.use_batch_norm = use_batch_norm
 
-        self.encoder = Encoder(input_size, input_channels, feature_dim)
+        if mode == 'raw':
+            self.encoder = Encoder(input_size, input_channels, feature_dim)
+        elif mode == 'sst':
+            self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+        else:
+            raise ValueError
 
         final_fc = []
 
@@ -96,8 +109,8 @@ class DCCClassifier(nn.Module):
         # self._initialize_weights(self.final_fc)
 
     def forward(self, x):
-        batch_size, num_epoch, channel, time_len = x.shape
-        x = x.view(batch_size * num_epoch, channel, time_len)
+        batch_size, num_epoch, time_len, width, height = x.shape
+        x = x.view(batch_size * num_epoch, 1, *x.shape[2:])
         feature = self.encoder(x)
         # feature = feature.view(batch_size, num_epoch, self.feature_dim)
 
