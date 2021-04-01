@@ -323,58 +323,36 @@ class AMIGOSDataset(Dataset):
 
 class SEEDSSTDataset(Dataset):
     def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
-        files = sorted(os.listdir(data_path))
-        assert len(files) == SEED_NUM_SUBJECT
-        files = [files[i] for i in subject_list]
+        self.data_path = data_path
+        self.num_seq = num_seq
+        self.label_dim = label_dim
 
-        all_data = []
-        all_label = []
-        # Enumerate all files
-        for a_file in tqdm(files):
-            # data = sio.loadmat(os.path.join(data_path, a_file))
-            data = np.load(os.path.join(data_path, a_file))
-            # Each file contains 15 consecutive trials
-            movie_ids = list(filter(lambda x: not x.startswith('__'), data.keys()))
+        subjects = sorted(os.listdir(data_path))
+        assert len(subjects) == SEED_NUM_SUBJECT
+        subjects = [subjects[i] for i in subject_list]
 
-            subject_data = []
-            subject_label = []
-            assert len(movie_ids) == len(SEED_LABELS)
+        all_files = []
 
-            for i, key in enumerate(movie_ids):
-                trial_data = data[key]
-                # trial_data = tensor_standardize(trial_data, dim=-1)
-                assert trial_data.shape[0] % SEED_SAMPLING_RATE == 0
+        for a_subject in subjects:
+            files = sorted(os.listdir(os.path.join(data_path, a_subject)))
+            all_files += list(zip([a_subject] * len(files), files))
 
-                trial_data = trial_data.reshape(trial_data.shape[0] // SEED_IV_SAMPLING_RATE, SEED_IV_SAMPLING_RATE,
-                                                *trial_data.shape[1:])
+        self.all_files = all_files
 
-                if num_seq == 0:
-                    trial_data = np.expand_dims(trial_data, axis=1)
-                else:
-                    if trial_data.shape[0] % num_seq != 0:
-                        trial_data = trial_data[:trial_data.shape[0] // num_seq * num_seq]
-                    trial_data = trial_data.reshape(trial_data.shape[0] // num_seq, num_seq, *trial_data.shape[1:])
+    def __getitem__(self, item):
+        subject_name, filename = self.all_files[item]
+        data = np.load(os.path.join(self.data_path, subject_name, filename))
+        x = data['data'].astype(np.float32)
+        y = data['label'].astype(np.long)
 
-                trial_label = np.full(shape=trial_data.shape[:2], fill_value=SEED_LABELS[i])
+        return torch.from_numpy(x), torch.from_numpy(y)
 
-                trial_data = np.expand_dims(trial_data, axis=2)  # add the channel dim
-
-                # Final shape: (num_sample, num_seq, channel, time_len, width, height)
-                subject_data.append(trial_data)
-                subject_label.append(trial_label)
-            subject_data = np.concatenate(subject_data, axis=0)
-            subject_label = np.concatenate(subject_label, axis=0)
-            all_data.append(subject_data)
-            all_label.append(subject_label)
-        all_data = np.concatenate(all_data, axis=0)
-        all_label = np.concatenate(all_label, axis=0)
-
-        print(all_data.shape)
-        print(all_label.shape)
+    def __len__(self):
+        return len(self.all_files)
 
 
 if __name__ == '__main__':
-    base_path = 'data/sst_feature/SEED/raw'
+    base_path = 'data/sst_feature/SEED/feature'
 
     # SST features
     dataset = SEEDSSTDataset(os.path.join(base_path), num_seq=10,
@@ -391,4 +369,5 @@ if __name__ == '__main__':
     #                         subject_list=[i for i in range(SEED_IV_NUM_SUBJECT // 10 * 9)])
     # dataset = AMIGOSDataset(os.path.join(base_path, 'AMIGOS', 'signal'), num_seq=10,
     #                         subject_list=[i for i in range(AMIGOS_NUM_SUBJECT // 10 * 9)])
-    print(dataset[np.random.randint(low=0, high=len(dataset))])
+    print(dataset[np.random.randint(low=0, high=len(dataset))][0].shape,
+          dataset[np.random.randint(low=0, high=len(dataset))][1].shape)
