@@ -17,8 +17,11 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.multiprocessing as mp
+import torch.distributed as dist
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data.distributed import DistributedSampler
 from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
@@ -63,7 +66,7 @@ def parse_args(verbose=True):
     parser.add_argument('--cos', action='store_true', help='use cosine lr schedule')
     parser.add_argument('--lr-schedule', type=int, nargs='*', default=[120, 160])
     parser.add_argument('--batch-size', type=int, default=64)
-    parser.add_argument('--num-workers', type=int, default=0)
+    parser.add_argument('--num-workers', type=int, default=4)
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--finetune-epochs', type=int, default=10)
     parser.add_argument('--finetune-ratio', type=float, default=0.1)
@@ -74,6 +77,11 @@ def parse_args(verbose=True):
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--wd', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.9, help='Only valid for SGD optimizer')
+
+    # Distributed training
+    parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
+    parser.add_argument('--dist-url', default='tcp://127.0.0.1:12345', type=str,
+                        help='url used to set up distributed training')
 
     parser.add_argument('--seed', type=int, default=2020)
 
@@ -105,13 +113,15 @@ def pretrain(run_id, model, dataset, device, args):
 
     criterion = nn.CrossEntropyLoss().cuda(device)
 
+    sampler = DistributedSampler(dataset, shuffle=True)
     data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
-                             shuffle=True, pin_memory=True, drop_last=True)
+                             shuffle=(sampler is None), pin_memory=True, drop_last=True, sampler=sampler)
 
     model.train()
     for epoch in range(args.pretrain_epochs):
         losses = []
         accuracies = []
+        data_loader.sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
@@ -214,9 +224,14 @@ def evaluate(classifier, dataset, device, args):
     return scores, targets
 
 
-def run(run_id, train_patients, test_patients, args):
-    print('Train patient ids:', train_patients)
-    print('Test patient ids:', test_patients)
+def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
+    print(f'[INFO] Process ({gpu}) invoked among {ngpus_per_node} gpus...')
+    dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
+                            world_size=ngpus_per_node, rank=gpu)
+
+    if gpu == 0:
+        print('Train patient ids:', train_patients)
+        print('Test patient ids:', test_patients)
 
     if args.data_name == 'SEED':
         input_size = 200
@@ -227,51 +242,59 @@ def run(run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
+    torch.cuda.set_device(gpu)
+
     if args.feature_mode == 'raw':
-        model = DCC((200, 32, 32), 1, args.feature_dim, True, 0.07, args.device, mode='sst', strides=(1, 2, 2, 2))
+        model = DCC((200, 32, 32), 1, args.feature_dim, True, 0.07, gpu, mode='sst', strides=(1, 2, 2, 2))
     else:
-        model = DCC((5, 32, 32), 1, args.feature_dim, True, 0.07, args.device, mode='sst', strides=(1, 1, 2, 2))
-    model.cuda(args.device)
+        model = DCC((5, 32, 32), 1, args.feature_dim, True, 0.07, gpu, mode='sst', strides=(1, 1, 2, 2))
+    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model.cuda(gpu)
+    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+    model_without_ddp = model.module
 
     train_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, train_patients,
                                                         label_dim=args.label_dim)
-    pretrain(run_id, model, train_dataset, args.device, args)
+    pretrain(run_id, model, train_dataset, gpu, args)
 
-    # Finetuning
-    if args.finetune_mode == 'freeze':
-        use_dropout = False
-        use_l2_norm = True
-        use_final_bn = True
-    else:
-        use_dropout = True
-        use_l2_norm = False
-        use_final_bn = False
+    if gpu == 0:
+        print('[INFO] Start finetuning on the first gpu...')
 
-    if args.feature_mode == 'raw':
-        classifier = DCCClassifier(input_size=(200, 32, 32), input_channels=1, feature_dim=args.feature_dim,
-                                   num_class=args.classes,
-                                   use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                   device=args.device, mode='sst', strides=(1, 2, 2, 2))
-    else:
-        classifier = DCCClassifier(input_size=(5, 32, 32), input_channels=1,
-                                   feature_dim=args.feature_dim,
-                                   num_class=args.classes,
-                                   use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                   device=args.device, mode='sst', strides=(1, 1, 2, 2))
+        # Finetuning
+        if args.finetune_mode == 'freeze':
+            use_dropout = False
+            use_l2_norm = True
+            use_final_bn = True
+        else:
+            use_dropout = True
+            use_l2_norm = False
+            use_final_bn = False
 
-    classifier.cuda(args.device)
+        if args.feature_mode == 'raw':
+            classifier = DCCClassifier(input_size=(200, 32, 32), input_channels=1, feature_dim=args.feature_dim,
+                                       num_class=args.classes,
+                                       use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                       device=gpu, mode='sst', strides=(1, 2, 2, 2))
+        else:
+            classifier = DCCClassifier(input_size=(5, 32, 32), input_channels=1,
+                                       feature_dim=args.feature_dim,
+                                       num_class=args.classes,
+                                       use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                       device=gpu, mode='sst', strides=(1, 1, 2, 2))
 
-    classifier.load_state_dict(model.state_dict(), strict=False)
+        classifier.cuda(gpu)
 
-    finetune(classifier, train_dataset, args.device, args)
+        classifier.load_state_dict(model.module.state_dict(), strict=False)
 
-    test_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, test_patients,
-                                                       label_dim=args.label_dim)
-    scores, targets = evaluate(classifier, test_dataset, args.device, args)
-    performance = get_performance(scores, targets)
-    with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
-        pickle.dump({'performance': performance, 'args': vars(args)}, f)
-    print(performance)
+        finetune(classifier, train_dataset, gpu, args)
+
+        test_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, test_patients,
+                                                           label_dim=args.label_dim)
+        scores, targets = evaluate(classifier, test_dataset, gpu, args)
+        performance = get_performance(scores, targets)
+        with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
+            pickle.dump({'performance': performance, 'args': vars(args)}, f)
+        print(performance)
 
 
 if __name__ == '__main__':
@@ -299,6 +322,8 @@ if __name__ == '__main__':
 
     patients = np.arange(num_patients)
 
+    ngpus_per_node = torch.cuda.device_count()
+
     assert args.kfold <= len(patients)
     assert args.fold < args.kfold
     kf = KFold(n_splits=args.kfold)
@@ -306,5 +331,6 @@ if __name__ == '__main__':
         if i == args.fold:
             print(f'[INFO] Running cross validation for {i + 1}/{args.kfold} fold...')
             train_patients, test_patients = patients[train_index].tolist(), patients[test_index].tolist()
-            run(i, train_patients, test_patients, args)
+            # run(i, train_patients, test_patients, args)
+            mp.spawn(run, nprocs=ngpus_per_node, args=(ngpus_per_node, i, train_patients, test_patients, args))
             break

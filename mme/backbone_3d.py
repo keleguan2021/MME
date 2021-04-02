@@ -2,7 +2,7 @@
 @Time    : 2021/3/30 22:19
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : backbone_resnet3d.py
+@File    : backbone_3d.py
 @Software: PyCharm
 @Desc    : 
 """
@@ -316,7 +316,85 @@ class ResNet2d3d(nn.Module):
         return x
 
 
+class Encoder3d(nn.Module):
+    def __init__(self, input_size, input_channel, feature_dim, feature_mode='raw'):
+        super(Encoder3d, self).__init__()
+
+        if feature_mode == 'raw':
+            strides = (2, 2, 2, 2)
+        elif feature_mode == 'freq':
+            strides = (1, 1, 1, 1)
+        else:
+            raise ValueError
+
+        self.features = nn.Sequential(
+            # Heading conv layer
+            nn.Conv3d(input_channel, 64, kernel_size=(3, 3, 3), stride=(strides[0], 2, 2), padding=(1, 1, 1)),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(strides[1], 2, 2), padding=(1, 1, 1)),
+
+            # First group of conv layer (2d, without stride)
+            nn.Conv3d(64, 64, kernel_size=(1, 3, 3), stride=1, padding=(0, 1, 1)),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(64, 128, kernel_size=(1, 3, 3), stride=1, padding=(0, 1, 1)),
+            nn.BatchNorm3d(128),
+            nn.ReLU(inplace=True),
+
+            # Second group of conv layer with stride (3d)
+            nn.Conv3d(128, 128, kernel_size=3, stride=(strides[2], 2, 2), padding=1),
+            nn.BatchNorm3d(128),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm3d(256),
+            nn.ReLU(inplace=True),
+
+            # Third group of conv layer with stride (3d)
+            nn.Conv3d(256, 256, kernel_size=3, stride=(strides[3], 2, 2), padding=1),
+            nn.BatchNorm3d(256),
+            nn.ReLU(inplace=True),
+
+            nn.Conv3d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm3d(512),
+            nn.ReLU(inplace=True)
+        )
+
+        last_size = list(input_size)
+        last_size[0] = int(math.ceil(last_size[0] / strides[0]))
+        last_size[1] = int(math.ceil((last_size[1] / 2)))
+        last_size[2] = int(math.ceil((last_size[2] / 2)))
+        last_size[0] = int(math.ceil(last_size[0] / strides[1]))
+        last_size[1] = int(math.ceil((last_size[1] / 2)))
+        last_size[2] = int(math.ceil((last_size[2] / 2)))
+
+        last_size[0] = int(math.ceil(last_size[0] / strides[2]))
+        last_size[1] = int(math.ceil((last_size[1] / 2)))
+        last_size[2] = int(math.ceil((last_size[2] / 2)))
+
+        last_size[0] = int(math.ceil(last_size[0] / strides[3]))
+        last_size[1] = int(math.ceil((last_size[1] / 2)))
+        last_size[2] = int(math.ceil((last_size[2] / 2)))
+
+        self.fc = nn.Sequential(
+            nn.Dropout(0.5),
+            nn.Linear(512 * last_size[0] * last_size[1] * last_size[2], feature_dim),
+            nn.BatchNorm1d(feature_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(feature_dim, feature_dim)
+        )
+
+    def forward(self, x):
+        out = self.features(x)
+        out = out.view(out.shape[0], -1)
+        out = self.fc(out)
+
+        return out
+
+
 if __name__ == '__main__':
-    model = ResNet2d3d(input_channel=1, strides=(1, 1, 2, 2), input_size=[5, 32, 32], feature_dim=128)
+    model = Encoder3d(input_channel=1, input_size=(5, 32, 32), feature_dim=128, feature_mode='freq')
     out = model(torch.randn(32, 1, 5, 32, 32))
     print(out.shape)

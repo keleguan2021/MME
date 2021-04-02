@@ -10,7 +10,21 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .backbone import Encoder, ResNet2d3d
+from .backbone import Encoder, Encoder3d, ResNet2d3d
+
+
+@torch.no_grad()
+def concat_all_gather(tensor):
+    """
+    Performs all_gather operation on the provided tensors.
+    *** Warning ***: torch.distributed.all_gather has no gradient.
+    """
+    tensors_gather = [torch.ones_like(tensor)
+                      for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensors_gather, tensor, async_op=False)
+
+    output = torch.cat(tensors_gather, dim=0)
+    return output
 
 
 class DCC(nn.Module):
@@ -29,11 +43,59 @@ class DCC(nn.Module):
         if mode == 'raw':
             self.encoder = Encoder(input_size, input_channels, feature_dim)
         elif mode == 'sst':
-            self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+            # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+            self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
         else:
             raise ValueError
 
         self.targets = None
+
+    @torch.no_grad()
+    def _batch_shuffle_ddp(self, x):
+        '''
+        Batch shuffle, for making use of BatchNorm.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # random shuffle index
+        idx_shuffle = torch.randperm(batch_size_all).cuda()
+
+        # broadcast to all gpus
+        torch.distributed.broadcast(idx_shuffle, src=0)
+
+        # index for restoring
+        idx_unshuffle = torch.argsort(idx_shuffle)
+
+        # shuffled index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this], idx_unshuffle
+
+    @torch.no_grad()
+    def _batch_unshuffle_ddp(self, x, idx_unshuffle):
+        '''
+        Undo batch shuffle.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # restored index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_unshuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this]
 
     def forward(self, x):
         # Extract feautres
@@ -93,7 +155,7 @@ class DCCClassifier(nn.Module):
         if mode == 'raw':
             self.encoder = Encoder(input_size, input_channels, feature_dim)
         elif mode == 'sst':
-            self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+            self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
         else:
             raise ValueError
 
@@ -126,24 +188,84 @@ class DCCClassifier(nn.Module):
 
 
 class MME(nn.Module):
-    def __init__(self, input_channels, feature_dim, use_temperature, temperature, device):
+    def __init__(self, input_size_v1, input_size_v2, input_channels, feature_dim, use_temperature, temperature, device,
+                 strides=None,
+                 mode='raw'):
         super(MME, self).__init__()
 
+        self.input_size_v1 = input_size_v1
+        self.input_size_v2 = input_size_v2
         self.input_channels = input_channels
         self.feature_dim = feature_dim
         self.use_temperature = use_temperature
         self.temperature = temperature
         self.device = device
+        self.mode = mode
 
-        self.encoder = ResNet2d3d(input_channel=input_channels, feature_dim=feature_dim)
-        self.sampler = ResNet2d3d(input_channel=input_channels, feature_dim=feature_dim)
+        if mode == 'raw':
+            self.encoder = Encoder(input_size_v1, input_channels, feature_dim)
+            self.sampler = Encoder(input_size_v2, input_channels, feature_dim)
+        elif mode == 'sst':
+            # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels, feature_dim=feature_dim)
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels, feature_dim=feature_dim)
+        else:
+            raise ValueError
+
         self.targets = None
+
+    @torch.no_grad()
+    def _batch_shuffle_ddp(self, x):
+        '''
+        Batch shuffle, for making use of BatchNorm.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # random shuffle index
+        idx_shuffle = torch.randperm(batch_size_all).cuda()
+
+        # broadcast to all gpus
+        torch.distributed.broadcast(idx_shuffle, src=0)
+
+        # index for restoring
+        idx_unshuffle = torch.argsort(idx_shuffle)
+
+        # shuffled index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this], idx_unshuffle
+
+    @torch.no_grad()
+    def _batch_unshuffle_ddp(self, x, idx_unshuffle):
+        '''
+        Undo batch shuffle.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # restored index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_unshuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this]
 
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
-        batch_size, num_epoch, channel, time_len = x.shape
-        x = x.view(batch_size * num_epoch, channel, time_len)
+        batch_size, num_epoch, time_len, width, height = x.shape
+        x = x.view(batch_size * num_epoch, 1, *x.shape[2:])
         feature = self.encoder(x)
         feature = feature.view(batch_size, num_epoch, self.feature_dim)
         if self.use_temperature:
@@ -172,3 +294,10 @@ class MME(nn.Module):
             self.targets = targets
 
         return logits, self.targets
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
