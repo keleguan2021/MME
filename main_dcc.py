@@ -23,8 +23,8 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
-from mme import SEEDDataset, DEAPDataset, AMIGOSDataset
-from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
+from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset
+from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -44,7 +44,7 @@ def parse_args(verbose=True):
 
     # Dataset
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
-    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP', 'AMIGOS'])
+    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
@@ -116,11 +116,13 @@ def pretrain(run_id, model, dataset, device, args):
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
 
-                output, target = model(x)
+                # output, target = model(x)
+                #
+                # loss = criterion(output, target)
+                # acc = logits_accuracy(output, target, topk=(1,))[0]
+                # accuracies.append(acc)
 
-                loss = criterion(output, target)
-                acc = logits_accuracy(output, target, topk=(1,))[0]
-                accuracies.append(acc)
+                loss = model(x)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -217,7 +219,7 @@ def run(run_id, train_patients, test_patients, args):
     print('Train patient ids:', train_patients)
     print('Test patient ids:', test_patients)
 
-    if args.data_name == 'SEED':
+    if args.data_name == 'SEED' or args.data_name == 'SEED-IV':
         input_size = 200
     elif args.data_name == 'DEAP':
         input_size = 128
@@ -229,8 +231,17 @@ def run(run_id, train_patients, test_patients, args):
     model = DCC(input_size, args.input_channel, args.feature_dim, True, 0.07, args.device)
     model.cuda(args.device)
 
-    train_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, train_patients,
-                                                     label_dim=args.label_dim)
+    if args.data_name == 'SEED':
+        train_dataset = SEEDDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'SEED-IV':
+        train_dataset = SEEDIVDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'DEAP':
+        train_dataset = DEAPDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'AMIGOS':
+        train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    else:
+        raise ValueError
+
     pretrain(run_id, model, train_dataset, args.device, args)
 
     # Finetuning
@@ -253,8 +264,16 @@ def run(run_id, train_patients, test_patients, args):
 
     finetune(classifier, train_dataset, args.device, args)
 
-    test_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, test_patients,
-                                                    label_dim=args.label_dim)
+    if args.data_name == 'SEED':
+        test_dataset = SEEDDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+    elif args.data_name == 'SEED-IV':
+        test_dataset = SEEDIVDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+    elif args.data_name == 'DEAP':
+        test_dataset = DEAPDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+    elif args.data_name == 'AMIGOS':
+        test_dataset = AMIGOSDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+    else:
+        raise ValueError
     scores, targets = evaluate(classifier, test_dataset, args.device, args)
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
@@ -278,6 +297,8 @@ if __name__ == '__main__':
 
     if args.data_name == 'SEED':
         num_patients = SEED_NUM_SUBJECT
+    elif args.data_name == 'SEED-IV':
+        num_patients = SEED_IV_NUM_SUBJECT
     elif args.data_name == 'DEAP':
         num_patients = DEAP_NUM_SUBJECT
     elif args.data_name == 'AMIGOS':

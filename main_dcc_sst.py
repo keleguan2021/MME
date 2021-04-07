@@ -25,7 +25,9 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
-from mme import adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
+from mme import (
+    adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance, MultiNCELoss
+)
 from mme import SEEDDataset, DEAPDataset, AMIGOSDataset, SEEDSSTDataset, SEEDIVSSTDataset
 from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
@@ -226,6 +228,11 @@ def evaluate(classifier, dataset, device, args):
 
 def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
     print(f'[INFO] Process ({gpu}) invoked among {ngpus_per_node} gpus...')
+
+    # Unique random seeds for each thread
+    if args.seed is not None:
+        setup_seed(args.seed + gpu)
+
     dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                             world_size=ngpus_per_node, rank=gpu)
 
@@ -299,9 +306,6 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
 if __name__ == '__main__':
     args = parse_args()
-
-    if args.seed is not None:
-        setup_seed(args.seed)
 
     if not os.path.exists(args.save_path):
         warnings.warn(f'The path {args.save_path} dost not existed, created...')

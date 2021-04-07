@@ -1,5 +1,5 @@
 from .backbone import Encoder, Encoder3d, ResNet2d3d
-from .dataset import SEEDDataset, DEAPDataset, AMIGOSDataset
+from .dataset import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset
 from .dataset import SEEDSSTDataset, SEEDIVSSTDataset
 from .model import DCC, DCCClassifier, MME
 from .utils import (

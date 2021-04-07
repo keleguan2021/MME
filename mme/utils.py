@@ -11,6 +11,9 @@ import math
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 from sklearn.metrics import accuracy_score, f1_score, confusion_matrix
 
 EPS = 1e-8
