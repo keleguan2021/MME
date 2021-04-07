@@ -120,13 +120,12 @@ class DCC(nn.Module):
         mask = mask.cuda(self.device)
 
         logits = torch.einsum('ijk,mnk->ijnm', [feature, feature])
+        if self.use_temperature:
+            logits /= self.temperature
+
         pos = torch.exp(logits.masked_select(mask).view(batch_size, num_epoch, num_epoch)).sum(-1)
         neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
                                                                            batch_size * num_epoch - num_epoch)).sum(-1)
-
-        if self.use_temperature:
-            pos /= self.temperature
-            neg /= self.temperature
 
         loss = (-torch.log(pos / (pos + neg))).mean()
 
@@ -304,28 +303,26 @@ class MME(nn.Module):
         feature_q = F.normalize(feature_q, p=2, dim=1)
         feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
 
-        # Compute scores
-        # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
-        # logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
+        #################################################################
+        #                       Multi-InfoNCE Loss                      #
+        #################################################################
+        mask = torch.zeros(batch_size, num_epoch, num_epoch, batch_size, dtype=bool)
+        for i in range(batch_size):
+            for j in range(num_epoch):
+                mask[i, j, :, i] = 1
+        mask = mask.cuda(self.device)
 
         logits = torch.einsum('ijk,mnk->ijnm', [feature_k, feature_k])
-        # print('3. Logits: ', logits.shape)
-        logits = logits.view(batch_size * num_epoch, num_epoch * batch_size)
         if self.use_temperature:
             logits /= self.temperature
 
-        # Similarities of the second view for each instance
-        sim_v2 = torch.einsum('ijk,mnk->ijnm', [feature_q, feature_q])
+        pos = torch.exp(logits.masked_select(mask).view(batch_size, num_epoch, num_epoch)).sum(-1)
+        neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
+                                                                           batch_size * num_epoch - num_epoch)).sum(-1)
 
-        targets = torch.zeros(batch_size, num_epoch, num_epoch, batch_size)
-        for i in range(batch_size):
-            for j in range(num_epoch):
-                targets[i, j, :, i] = 1
-        targets = targets.view(batch_size * num_epoch, num_epoch * batch_size)
-        targets = targets.argmax(dim=1)
-        targets = targets.cuda(device=self.device)
+        loss = (-torch.log(pos / (pos + neg))).mean()
 
-        return logits, targets
+        return loss
 
     def _initialize_weights(self, module):
         for name, param in module.named_parameters():

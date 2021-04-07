@@ -26,7 +26,7 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import (
-    adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance, MultiNCELoss
+    adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
 )
 from mme import SEEDDataset, DEAPDataset, AMIGOSDataset, SEEDSSTDataset, SEEDIVSSTDataset
 from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
