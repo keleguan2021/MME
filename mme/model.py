@@ -120,8 +120,8 @@ class DCC(nn.Module):
         mask = mask.cuda(self.device)
 
         logits = torch.einsum('ijk,mnk->ijnm', [feature, feature])
-        if self.use_temperature:
-            logits /= self.temperature
+        # if self.use_temperature:
+        #     logits /= self.temperature
 
         pos = torch.exp(logits.masked_select(mask).view(batch_size, num_epoch, num_epoch)).sum(-1)
         neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
@@ -298,10 +298,11 @@ class MME(nn.Module):
         feature_k = F.normalize(feature_k, p=2, dim=1)
         feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
 
-        x2 = x2.view(batch_size * num_epoch, 1, *x2.shape[2:])
-        feature_q = self.sampler(x2)
-        feature_q = F.normalize(feature_q, p=2, dim=1)
-        feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
+        with torch.no_grad():
+            x2 = x2.view(batch_size * num_epoch, 1, *x2.shape[2:])
+            feature_q = self.sampler(x2)
+            feature_q = F.normalize(feature_q, p=2, dim=1)
+            feature_q = feature_q.view(batch_size, num_epoch, self.feature_dim)
 
         #################################################################
         #                       Multi-InfoNCE Loss                      #
@@ -313,12 +314,18 @@ class MME(nn.Module):
         mask = mask.cuda(self.device)
 
         logits = torch.einsum('ijk,mnk->ijnm', [feature_k, feature_k])
-        if self.use_temperature:
-            logits /= self.temperature
+        # if self.use_temperature:
+        #     logits /= self.temperature
+
+        sim = torch.einsum('ijk,mnk->ijnm', [feature_q, feature_q])
 
         pos = torch.exp(logits.masked_select(mask).view(batch_size, num_epoch, num_epoch)).sum(-1)
         neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
-                                                                           batch_size * num_epoch - num_epoch)).sum(-1)
+                                                                           batch_size * num_epoch - num_epoch))
+        neg_v2 = sim.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
+                                                                 batch_size * num_epoch - num_epoch)
+
+        neg = (neg * neg_v2).sum(-1)
 
         loss = (-torch.log(pos / (pos + neg))).mean()
 

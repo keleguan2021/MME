@@ -42,6 +42,7 @@ def parse_args(verbose=True):
     parser.add_argument('--dest-path', type=str, required=True)
     parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP', 'SEED-IV'])
     parser.add_argument('--num-seq', type=int, default=10)
+    parser.add_argument('--grid-res', type=int, default=32)
 
     args_parsed = parser.parse_args()
 
@@ -163,25 +164,33 @@ if __name__ == '__main__':
                     np.put(values, points, current_data[:, ts])
 
                     ############### Only for test ###############
-                    # plt.imshow(values)
-                    # plt.title('original_values')
-                    # plt.colorbar()
-                    # plt.show()
+                    # if 500 < ts < 510:
+                    #     plt.imshow(values, cmap='jet')
+                    #     plt.title('original_values')
+                    #     plt.colorbar()
+                    #     plt.savefig('')
+                    #     plt.show()
                     ############### Only for test ###############
 
                     #             grid_x, grid_y = np.meshgrid(np.arange(9), np.arange(9))
                     #             interpolated_mat = interpolate.griddata(points, values, (grid_x, grid_y), method='cubic')
                     #             interpolator = interpolate.interp2d(x=points[:,1], y=points[:,0], z=values, kind='cubic')
                     interpolator = interpolate.interp2d(x=np.arange(9), y=np.arange(9), z=values, kind='cubic')
-                    interpolated_mat = interpolator(np.linspace(0, 8, 32), np.linspace(0, 8, 32))
+                    interpolated_mat = interpolator(np.linspace(0, 8, args.grid_res), np.linspace(0, 8, args.grid_res))
 
                     ############### Only for test ###############
-                    # print(points.shape)
-                    # print(interpolated_mat)
-                    # plt.imshow(interpolated_mat)
-                    # plt.title('interpolated_mat')
-                    # plt.colorbar()
-                    # plt.show()
+                    # if 2000 < ts < 2200 and ts % 5 == 0:
+                    #     print(points.shape)
+                    #     print(interpolated_mat)
+                    #     plt.imshow(interpolated_mat, cmap='jet')
+                    #     # plt.title('interpolated_mat')
+                    #     # plt.colorbar()
+                    #     plt.xticks([])
+                    #     plt.yticks([])
+                    #     plt.savefig(f'raw_{ts}.svg')
+                    #     plt.show()
+                    # if ts > 2200:
+                    #     exit()
                     ############### Only for test ###############
 
                     trial_raw_data.append(interpolated_mat)
@@ -263,22 +272,29 @@ if __name__ == '__main__':
                         np.put(values, points, current_data[:, ts, i_feature])
 
                         ############### Only for test ###############
-                        # plt.imshow(values)
+                        # plt.imshow(values, cmap='jet')
                         # plt.title('original_values')
                         # plt.colorbar()
                         # plt.show()
                         ############### Only for test ###############
 
                         interpolator = interpolate.interp2d(x=np.arange(9), y=np.arange(9), z=values, kind='cubic')
-                        interpolated_mat = interpolator(np.linspace(0, 8, 32), np.linspace(0, 8, 32))
+                        interpolated_mat = interpolator(np.linspace(0, 8, args.grid_res),
+                                                        np.linspace(0, 8, args.grid_res))
 
                         ############### Only for test ###############
-                        # print(points.shape)
-                        # print(interpolated_mat)
-                        # plt.imshow(interpolated_mat)
-                        # plt.title('interpolated_mat')
-                        # plt.colorbar()
-                        # plt.show()
+                        # if ts == 1:
+                        #     print(points.shape)
+                        #     print(interpolated_mat)
+                        #     plt.imshow(interpolated_mat, cmap='jet')
+                        #     # plt.title('interpolated_mat')
+                        #     # plt.colorbar()
+                        #     plt.xticks([])
+                        #     plt.yticks([])
+                        #     plt.savefig(f'de_{i_feature}.svg')
+                        #     plt.show()
+                        # elif ts > 1:
+                        #     exit()
                         ############### Only for test ###############
 
                         band_feature_data.append(interpolated_mat)
