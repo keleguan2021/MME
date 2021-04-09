@@ -29,7 +29,7 @@ def concat_all_gather(tensor):
 
 class DCC(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, use_temperature, temperature, device, strides=None,
-                 mode='raw'):
+                 mode='raw', use_dist=False):
         super(DCC, self).__init__()
 
         self.input_size = input_size
@@ -39,6 +39,7 @@ class DCC(nn.Module):
         self.temperature = temperature
         self.device = device
         self.mode = mode
+        self.use_dist = use_dist
 
         if mode == 'raw':
             self.encoder = Encoder(input_size, input_channels, feature_dim)

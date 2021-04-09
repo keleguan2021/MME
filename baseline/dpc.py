@@ -98,10 +98,10 @@ def parse_args(verbose=True):
     return args_parsed
 
 
-class CPC(nn.Module):
+class DPC(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, pred_steps, use_temperature, temperature,
                  device):
-        super(CPC, self).__init__()
+        super(DPC, self).__init__()
 
         self.input_size = input_size
         self.input_channels = input_channels
@@ -190,10 +190,10 @@ class CPC(nn.Module):
                 nn.init.orthogonal_(param, 1)
 
 
-class CPCClassifier(nn.Module):
+class DPCClassifier(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, pred_steps, num_class,
                  use_l2_norm, use_dropout, use_batch_norm, device):
-        super(CPCClassifier, self).__init__()
+        super(DPCClassifier, self).__init__()
 
         self.input_size = input_size
         self.input_channels = input_channels

@@ -59,6 +59,7 @@ def parse_args(verbose=True):
     parser.add_argument('--input-channel', type=int, default=62)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--num-seq', type=int, default=10)
+    parser.add_argument('--grid-res', type=int, default=16)
 
     # Training
     parser.add_argument('--pretrain-epochs', type=int, default=200)
@@ -81,6 +82,7 @@ def parse_args(verbose=True):
     parser.add_argument('--momentum', type=float, default=0.9, help='Only valid for SGD optimizer')
 
     # Distributed training
+    parser.add_argument('--use-dist', action='store_true')
     parser.add_argument('--dist-backend', default='nccl', type=str, help='distributed backend')
     parser.add_argument('--dist-url', default='tcp://127.0.0.1:12345', type=str,
                         help='url used to set up distributed training')
@@ -115,25 +117,33 @@ def pretrain(run_id, model, dataset, device, args):
 
     criterion = nn.CrossEntropyLoss().cuda(device)
 
-    sampler = DistributedSampler(dataset, shuffle=True)
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
-                             shuffle=(sampler is None), pin_memory=True, drop_last=True, sampler=sampler)
+    if args.use_dist:
+        sampler = DistributedSampler(dataset, shuffle=True)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                                 shuffle=(sampler is None), pin_memory=True, drop_last=True, sampler=sampler)
+    else:
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                                 shuffle=True, pin_memory=True, drop_last=True)
 
     model.train()
     for epoch in range(args.pretrain_epochs):
         losses = []
         accuracies = []
-        data_loader.sampler.set_epoch(epoch)
+        if args.use_dist:
+            data_loader.sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
 
-                output, target = model(x)
+                # output, target = model(x)
 
-                loss = criterion(output, target)
-                acc = logits_accuracy(output, target, topk=(1,))[0]
-                accuracies.append(acc)
+                # loss = criterion(output, target)
+
+                loss = model(x)
+
+                # acc = logits_accuracy(output, target, topk=(1,))[0]
+                # accuracies.append(acc)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -227,14 +237,16 @@ def evaluate(classifier, dataset, device, args):
 
 
 def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
-    print(f'[INFO] Process ({gpu}) invoked among {ngpus_per_node} gpus...')
+    if args.use_dist:
+        print(f'[INFO] Process ({gpu}) invoked among {ngpus_per_node} gpus...')
 
     # Unique random seeds for each thread
     if args.seed is not None:
         setup_seed(args.seed + gpu)
 
-    dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                            world_size=ngpus_per_node, rank=gpu)
+    if args.use_dist:
+        dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url, world_size=ngpus_per_node,
+                                rank=gpu)
 
     if gpu == 0:
         print('Train patient ids:', train_patients)
@@ -249,20 +261,27 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
-    torch.cuda.set_device(gpu)
+    if args.use_dist:
+        torch.cuda.set_device(gpu)
 
     if args.feature_mode == 'raw':
-        model = DCC((200, 32, 32), 1, args.feature_dim, True, 0.07, gpu, mode='sst', strides=(1, 2, 2, 2))
+        model = DCC((200, args.grid_res, args.grid_res), 1, args.feature_dim, True, 0.07,
+                    gpu if args.use_dist else args.device, mode='sst', strides=(1, 2, 2, 2), use_dist=args.use_dist)
     else:
-        model = DCC((5, 32, 32), 1, args.feature_dim, True, 0.07, gpu, mode='sst', strides=(1, 1, 2, 2))
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model.cuda(gpu)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-    model_without_ddp = model.module
+        model = DCC((5, args.grid_res, args.grid_res), 1, args.feature_dim, True, 0.07,
+                    gpu if args.use_dist else args.device, mode='sst', strides=(1, 1, 2, 2), use_dist=args.use_dist)
+    if args.use_dist:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model.cuda(gpu)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+        model_without_ddp = model.module
+    else:
+        model.cuda(args.device)
 
     train_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, train_patients,
                                                         label_dim=args.label_dim)
-    pretrain(run_id, model, train_dataset, gpu, args)
+
+    pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
 
     if gpu == 0:
         print('[INFO] Start finetuning on the first gpu...')
@@ -291,13 +310,16 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
         classifier.cuda(gpu)
 
-        classifier.load_state_dict(model.module.state_dict(), strict=False)
+        if args.use_dist:
+            classifier.load_state_dict(model.module.state_dict(), strict=False)
+        else:
+            classifier.load_state_dict(model.state_dict(), strict=False)
 
-        finetune(classifier, train_dataset, gpu, args)
+        finetune(classifier, train_dataset, gpu if args.use_dist else args.device, args)
 
         test_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, test_patients,
                                                            label_dim=args.label_dim)
-        scores, targets = evaluate(classifier, test_dataset, gpu, args)
+        scores, targets = evaluate(classifier, test_dataset, gpu if args.use_dist else args.device, args)
         performance = get_performance(scores, targets)
         with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
             pickle.dump({'performance': performance, 'args': vars(args)}, f)
@@ -335,6 +357,8 @@ if __name__ == '__main__':
         if i == args.fold:
             print(f'[INFO] Running cross validation for {i + 1}/{args.kfold} fold...')
             train_patients, test_patients = patients[train_index].tolist(), patients[test_index].tolist()
-            # run(i, train_patients, test_patients, args)
-            mp.spawn(run, nprocs=ngpus_per_node, args=(ngpus_per_node, i, train_patients, test_patients, args))
+            if args.use_dist:
+                mp.spawn(run, nprocs=ngpus_per_node, args=(ngpus_per_node, i, train_patients, test_patients, args))
+            else:
+                run(0, None, i, train_patients, test_patients, args)
             break
