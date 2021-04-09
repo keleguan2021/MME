@@ -297,16 +297,17 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
             use_final_bn = False
 
         if args.feature_mode == 'raw':
-            classifier = DCCClassifier(input_size=(200, 32, 32), input_channels=1, feature_dim=args.feature_dim,
-                                       num_class=args.classes,
-                                       use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                       device=gpu, mode='sst', strides=(1, 2, 2, 2))
-        else:
-            classifier = DCCClassifier(input_size=(5, 32, 32), input_channels=1,
+            classifier = DCCClassifier(input_size=(200, args.grid_res, args.grid_res), input_channels=1,
                                        feature_dim=args.feature_dim,
                                        num_class=args.classes,
                                        use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                       device=gpu, mode='sst', strides=(1, 1, 2, 2))
+                                       device=gpu if args.use_dist else args.device, mode='sst', strides=(1, 2, 2, 2))
+        else:
+            classifier = DCCClassifier(input_size=(5, args.grid_res, args.grid_res), input_channels=1,
+                                       feature_dim=args.feature_dim,
+                                       num_class=args.classes,
+                                       use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
+                                       device=gpu if args.use_dist else args.device, mode='sst', strides=(1, 1, 2, 2))
 
         classifier.cuda(gpu)
 

@@ -127,13 +127,8 @@ class DPC(nn.Module):
         batch_size, num_epoch, channel, time_len = x.shape
         x = x.view(batch_size * num_epoch, channel, time_len)
         feature = self.encoder(x)
-        if self.network == 'r1d':
-            feature = F.avg_pool1d(feature, kernel_size=(1,), stride=(1,))
-        else:
-            feature = F.avg_pool2d(feature, kernel_size=(1, 1), stride=(1, 1))
-        last_size = np.prod(feature.shape) // batch_size // num_epoch // self.feature_size
-        assert batch_size * num_epoch * self.feature_size * last_size == np.prod(feature.shape)
-        feature = feature.view(batch_size, num_epoch, self.feature_size, last_size)
+
+        feature = feature.view(batch_size, num_epoch, self.feature_dim)
         feature_relu = self.relu(feature)
 
         ### aggregate, predict future ###
@@ -152,30 +147,23 @@ class DPC(nn.Module):
         # Feature: (batch_size, num_epoch, feature_size, last_size)
         # Pred: (batch_size, pred_steps, feature_size, last_size)
         feature = feature.permute(0, 1, 3, 2).contiguous()
-        if self.use_temperature:
-            feature = feature.view(batch_size * num_epoch * last_size, self.feature_size)
-            feature = F.normalize(feature, p=2, dim=1)
-            feature = feature.view(batch_size, num_epoch, last_size, self.feature_size)
+        feature = F.normalize(feature, p=2, dim=-1)
 
         pred = pred.permute(0, 1, 3, 2).contiguous()
-        if self.use_temperature:
-            pred = pred.view(batch_size * self.pred_steps * last_size, self.feature_size)
-            pred = F.normalize(pred, p=2, dim=1)
-            pred = pred.view(batch_size, self.pred_steps, last_size, self.feature_size)
+        pred = F.normalize(pred, p=2, dim=-1)
 
         logits = torch.einsum('ijkl,mnql->ijkqnm', [feature, pred])
         # print('3. Logits: ', logits.shape)
-        logits = logits.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
+        logits = logits.view(batch_size * num_epoch, self.pred_steps * batch_size)
         if self.use_temperature:
             logits /= self.temperature
 
         if self.targets is None:
-            targets = torch.zeros(batch_size, num_epoch, last_size, last_size, self.pred_steps, batch_size)
+            targets = torch.zeros(batch_size, num_epoch, self.pred_steps, batch_size)
             for i in range(batch_size):
-                for j in range(last_size):
-                    for k in range(self.pred_steps):
-                        targets[i, num_epoch - self.pred_steps + k, j, j, k, i] = 1
-            targets = targets.view(batch_size * num_epoch * last_size, last_size * self.pred_steps * batch_size)
+                for j in range(self.pred_steps):
+                    targets[i, num_epoch - self.pred_steps + j, j, i] = 1
+            targets = targets.view(batch_size * num_epoch, self.pred_steps * batch_size)
             targets = targets.argmax(dim=1)
             targets = targets.cuda(device=self.device)
             self.targets = targets
