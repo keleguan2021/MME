@@ -113,7 +113,7 @@ class DPC(nn.Module):
 
         self.encoder = Encoder(input_size, input_channels, feature_dim)
         self.agg = nn.GRU(input_size=feature_dim, hidden_size=feature_dim, batch_first=True)
-        self.predictors = nn.ModuleList([nn.Linear(feature_dim, feature_dim) for i in range(pred_steps)])
+        self.predictor = nn.Linear(feature_dim, feature_dim)
 
         self.relu = nn.ReLU(inplace=True)
         self.targets = None
@@ -133,26 +133,31 @@ class DPC(nn.Module):
 
         ### aggregate, predict future ###
         _, hidden = self.agg(feature_relu[:, 0:num_epoch - self.pred_steps, :].contiguous())
-        hidden = hidden[:, -1, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
+        hidden = hidden[-1, :, :]  # after tanh, (-1,1). get the hidden state of last layer, last time step
+
+        # print('first hidden: ', hidden.shape)
 
         pred = []
         for i in range(self.pred_steps):
             # sequentially pred future
             p_tmp = self.predictor(hidden)
+            # print('p_tmp', p_tmp.shape)
             pred.append(p_tmp)
             _, hidden = self.agg(self.relu(p_tmp).unsqueeze(1), hidden.unsqueeze(0))
-            hidden = hidden[:, -1, :]
+            # print('hidden', hidden.shape)
+            hidden = hidden[-1, :, :]
         pred = torch.stack(pred, 1)
 
         # Feature: (batch_size, num_epoch, feature_size, last_size)
         # Pred: (batch_size, pred_steps, feature_size, last_size)
-        feature = feature.permute(0, 1, 3, 2).contiguous()
+        # feature = feature.permute(0, 1, 3, 2).contiguous()
         feature = F.normalize(feature, p=2, dim=-1)
 
-        pred = pred.permute(0, 1, 3, 2).contiguous()
+        # pred = pred.permute(0, 1, 3, 2).contiguous()
         pred = F.normalize(pred, p=2, dim=-1)
 
-        logits = torch.einsum('ijkl,mnql->ijkqnm', [feature, pred])
+        # print(feature.shape, pred.shape)
+        logits = torch.einsum('ijk,mnk->ijnm', [feature, pred])
         # print('3. Logits: ', logits.shape)
         logits = logits.view(batch_size * num_epoch, self.pred_steps * batch_size)
         if self.use_temperature:
@@ -179,14 +184,13 @@ class DPC(nn.Module):
 
 
 class DPCClassifier(nn.Module):
-    def __init__(self, input_size, input_channels, feature_dim, pred_steps, num_class,
+    def __init__(self, input_size, input_channels, feature_dim, num_class,
                  use_l2_norm, use_dropout, use_batch_norm, device):
         super(DPCClassifier, self).__init__()
 
         self.input_size = input_size
         self.input_channels = input_channels
         self.feature_dim = feature_dim
-        self.pred_steps = pred_steps
         self.device = device
         self.use_l2_norm = use_l2_norm
         self.use_dropout = use_dropout
@@ -342,7 +346,7 @@ def run(run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
-    model = CPC(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
+    model = DPC(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
                 pred_steps=args.pred_steps, use_temperature=True, temperature=0.07, device=args.device)
     model.cuda(args.device)
 
@@ -360,7 +364,7 @@ def run(run_id, train_patients, test_patients, args):
         use_l2_norm = False
         use_final_bn = False
 
-    classifier = CPCClassifier(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
+    classifier = DPCClassifier(input_size=input_size, input_channels=args.input_channel, feature_dim=args.feature_dim,
                                num_class=args.classes, use_dropout=use_dropout, use_l2_norm=use_l2_norm,
                                use_batch_norm=use_final_bn, device=args.device)
     classifier.cuda(args.device)

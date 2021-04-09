@@ -28,8 +28,8 @@ from mme import DCC, DCCClassifier
 from mme import (
     adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
 )
-from mme import SEEDDataset, DEAPDataset, AMIGOSDataset, SEEDSSTDataset, SEEDIVSSTDataset
-from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
+from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SEEDSSTDataset, SEEDIVSSTDataset
+from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -49,7 +49,7 @@ def parse_args(verbose=True):
 
     # Dataset
     parser.add_argument('--data-path', type=str, default='data/sst_feature/SEED/raw')
-    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'DEAP', 'AMIGOS'])
+    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
@@ -252,7 +252,7 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
         print('Train patient ids:', train_patients)
         print('Test patient ids:', test_patients)
 
-    if args.data_name == 'SEED':
+    if args.data_name == 'SEED' or args.data_name == 'SEED-IV':
         input_size = 200
     elif args.data_name == 'DEAP':
         input_size = 128
@@ -278,8 +278,14 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
     else:
         model.cuda(args.device)
 
-    train_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, train_patients,
-                                                        label_dim=args.label_dim)
+    if args.data_name == 'SEED':
+        train_dataset = SEEDSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'SEED-IV':
+        train_dataset = SEEDIVSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'DEAP':
+        train_dataset = DEAPSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    else:
+        raise ValueError
 
     pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
 
@@ -318,8 +324,17 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
         finetune(classifier, train_dataset, gpu if args.use_dist else args.device, args)
 
-        test_dataset = eval(f'{args.data_name}SSTDataset')(args.data_path, args.num_seq, test_patients,
-                                                           label_dim=args.label_dim)
+        if args.data_name == 'SEED':
+            test_dataset = SEEDSSTDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+        elif args.data_name == 'SEED-IV':
+            test_dataset = SEEDIVSSTDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+        # elif args.data_name == 'DEAP':
+        #     test_dataset = DEAPDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+        else:
+            raise ValueError
+
+        # test_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, test_patients,
+        #                                                    label_dim=args.label_dim)
         scores, targets = evaluate(classifier, test_dataset, gpu if args.use_dist else args.device, args)
         performance = get_performance(scores, targets)
         with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
@@ -340,6 +355,8 @@ if __name__ == '__main__':
 
     if args.data_name == 'SEED':
         num_patients = SEED_NUM_SUBJECT
+    elif args.data_name == 'SEED-IV':
+        num_patients = SEED_IV_NUM_SUBJECT
     elif args.data_name == 'DEAP':
         num_patients = DEAP_NUM_SUBJECT
     elif args.data_name == 'AMIGOS':
