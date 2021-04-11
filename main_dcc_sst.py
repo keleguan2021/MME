@@ -62,6 +62,7 @@ def parse_args(verbose=True):
     parser.add_argument('--grid-res', type=int, default=16)
 
     # Training
+    parser.add_argument('--only-pretrain', action='store_true')
     parser.add_argument('--pretrain-epochs', type=int, default=200)
     parser.add_argument('--kfold', type=int, default=10)
     parser.add_argument('--fold', type=int, default=0)
@@ -288,8 +289,14 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
         raise ValueError
 
     pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
+    if args.use_dist:
+        torch.save(model.module.state_dict(),
+                   os.path.join(args.save_path, f'dcc_{args.feature_mode}_pretrained.pth.tar'))
+    else:
+        torch.save(model.state_dict(),
+                   os.path.join(args.save_path, f'dcc_{args.feature_mode}_pretrained.pth.tar'))
 
-    if gpu == 0:
+    if not args.only_pretrain and gpu == 0:
         print('[INFO] Start finetuning on the first gpu...')
 
         # Finetuning

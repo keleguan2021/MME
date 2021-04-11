@@ -384,6 +384,20 @@ class SEEDIVSSTDataset(Dataset):
         return len(self.all_files)
 
 
+class TwoDataset(Dataset):
+    def __init__(self, dataset1, dataset2):
+        assert len(dataset1) == len(dataset2)
+
+        self.dataset1 = dataset1
+        self.dataset2 = dataset2
+
+    def __getitem__(self, item):
+        return (*self.dataset1[item], *self.dataset2[item])
+
+    def __len__(self):
+        return len(self.dataset1)
+
+
 if __name__ == '__main__':
     base_path = 'data/sst_feature/SEED-IV/feature'
 

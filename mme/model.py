@@ -217,8 +217,7 @@ class DCCClassifier(nn.Module):
 
 class MME(nn.Module):
     def __init__(self, input_size_v1, input_size_v2, input_channels, feature_dim, use_temperature, temperature, device,
-                 strides=None,
-                 mode='raw'):
+                 strides=None, first_view='raw'):
         super(MME, self).__init__()
 
         self.input_size_v1 = input_size_v1
@@ -228,17 +227,17 @@ class MME(nn.Module):
         self.use_temperature = use_temperature
         self.temperature = temperature
         self.device = device
-        self.mode = mode
 
-        if mode == 'raw':
-            self.encoder = Encoder(input_size_v1, input_channels, feature_dim)
-            self.sampler = Encoder(input_size_v2, input_channels, feature_dim)
-        elif mode == 'sst':
-            # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
-            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels, feature_dim=feature_dim)
-            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels, feature_dim=feature_dim)
+        if first_view == 'raw':
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='raw')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='freq')
         else:
-            raise ValueError
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='freq')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='raw')
 
         for param_s in self.sampler.parameters():
             param_s.requires_grad = False  # not update by gradient
@@ -338,6 +337,54 @@ class MME(nn.Module):
                 nn.init.constant_(param, 0.0)
             elif 'weight' in name:
                 nn.init.orthogonal_(param, 1)
+
+
+class MMEClassifier(nn.Module):
+    def __init__(self, input_size, input_channels, feature_dim, num_class, use_l2_norm, use_dropout, use_batch_norm,
+                 device, strides=None):
+        super(MMEClassifier, self).__init__()
+
+        self.input_size = input_size
+        self.input_channels = input_channels
+        self.feature_dim = feature_dim
+        self.device = device
+        self.use_l2_norm = use_l2_norm
+        self.use_dropout = use_dropout
+        self.use_batch_norm = use_batch_norm
+
+        self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim,
+                                 feature_mode='raw')
+        self.sampler = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim,
+                                 feature_mode='freq')
+
+        final_fc = []
+
+        if use_batch_norm:
+            final_fc.append(nn.BatchNorm1d(feature_dim * 2))
+        if use_dropout:
+            final_fc.append(nn.Dropout(0.5))
+        final_fc.append(nn.Linear(feature_dim * 2, num_class))
+        self.final_fc = nn.Sequential(*final_fc)
+
+    def forward(self, x1, x2):
+        batch_size, num_epoch, *_ = x1.shape
+
+        x1 = x1.view(x1.shape[0] * x1.shape[1], 1, *x1.shape[2:])
+        x2 = x2.view(x2.shape[0] * x2.shape[1], 1, *x2.shape[2:])
+
+        feature1 = self.encoder(x1)
+        feature2 = self.sampler(x2)
+
+        if self.use_l2_norm:
+            feature1 = F.normalize(feature1, p=2, dim=1)
+            feature2 = F.normalize(feature2, p=2, dim=1)
+
+        feature = torch.cat([feature1, feature2], dim=-1)
+
+        out = self.final_fc(feature)
+        out = out.view(batch_size, num_epoch, -1)
+
+        return out
 
 
 if __name__ == '__main__':
