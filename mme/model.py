@@ -215,10 +215,12 @@ class DCCClassifier(nn.Module):
         return out
 
 
-class MME(nn.Module):
+class SSTDIS(nn.Module):
     def __init__(self, input_size_v1, input_size_v2, input_channels, feature_dim, use_temperature, temperature, device,
                  strides=None, first_view='raw'):
-        super(MME, self).__init__()
+        super(SSTDIS, self).__init__()
+
+        assert first_view in ['raw', 'freq']
 
         self.input_size_v1 = input_size_v1
         self.input_size_v2 = input_size_v2
@@ -226,6 +228,130 @@ class MME(nn.Module):
         self.feature_dim = feature_dim
         self.use_temperature = use_temperature
         self.temperature = temperature
+        self.first_view = first_view
+        self.device = device
+        self.mask = None
+
+        if first_view == 'raw':
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='raw')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='freq')
+        else:
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='freq')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                     feature_dim=feature_dim, feature_mode='raw')
+
+    @torch.no_grad()
+    def _batch_shuffle_ddp(self, x):
+        '''
+        Batch shuffle, for making use of BatchNorm.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # random shuffle index
+        idx_shuffle = torch.randperm(batch_size_all).cuda()
+
+        # broadcast to all gpus
+        torch.distributed.broadcast(idx_shuffle, src=0)
+
+        # index for restoring
+        idx_unshuffle = torch.argsort(idx_shuffle)
+
+        # shuffled index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this], idx_unshuffle
+
+    @torch.no_grad()
+    def _batch_unshuffle_ddp(self, x, idx_unshuffle):
+        '''
+        Undo batch shuffle.
+        *** Only support DistributedDataParallel (DDP) model. ***
+        '''
+        # gather from all gpus
+        batch_size_this = x.shape[0]
+        x_gather = concat_all_gather(x)
+        batch_size_all = x_gather.shape[0]
+
+        num_gpus = batch_size_all // batch_size_this
+
+        # restored index for this gpu
+        gpu_idx = torch.distributed.get_rank()
+        idx_this = idx_unshuffle.view(num_gpus, -1)[gpu_idx]
+
+        return x_gather[idx_this]
+
+    def forward(self, x1, x2):
+        # Extract feautres
+        # x: (batch, num_seq, channel, seq_len)
+        batch_size, num_epoch, time_len, width, height = x1.shape
+        x1 = x1.view(batch_size * num_epoch, 1, *x1.shape[2:])
+        feature_k = self.encoder(x1)
+        feature_k = F.normalize(feature_k, p=2, dim=1)
+        feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
+
+        x2 = x2.view(batch_size * num_epoch, 1, *x2.shape[2:])
+        feature_s = self.sampler(x2)
+        feature_s = F.normalize(feature_s, p=2, dim=1)
+        feature_s = feature_s.view(batch_size, num_epoch, self.feature_dim)
+
+        #################################################################
+        #                       Multi-InfoNCE Loss                      #
+        #################################################################
+        if self.mask is None:
+            mask = torch.zeros(batch_size * 2, num_epoch, num_epoch, batch_size * 2, dtype=bool)
+            for i in range(batch_size * 2):
+                for j in range(num_epoch):
+                    mask[i, j, :, i] = 1
+                    mask[i, j, j, (batch_size + i) % (2 * batch_size)] = 1
+            mask = mask.cuda(self.device)
+            self.mask = mask
+        else:
+            mask = self.mask
+
+        feature = torch.cat([feature_k, feature_s], dim=0)
+        logits = torch.einsum('ijk,mnk->ijnm', [feature, feature])
+
+        pos = torch.exp(logits.masked_select(mask).view(2 * batch_size, num_epoch, num_epoch + 1)).sum(-1)
+        neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(2 * batch_size, num_epoch,
+                                                                           2 * batch_size * num_epoch - num_epoch - 1)).sum(
+            -1)
+
+        loss = (-torch.log(pos / (pos + neg))).mean()
+
+        return loss
+
+    def _initialize_weights(self, module):
+        for name, param in module.named_parameters():
+            if 'bias' in name:
+                nn.init.constant_(param, 0.0)
+            elif 'weight' in name:
+                nn.init.orthogonal_(param, 1)
+
+
+class SSTMMD(nn.Module):
+    def __init__(self, input_size_v1, input_size_v2, input_channels, feature_dim, use_temperature, temperature, device,
+                 strides=None, first_view='raw'):
+        super(SSTMMD, self).__init__()
+
+        assert first_view in ['raw', 'freq']
+
+        self.input_size_v1 = input_size_v1
+        self.input_size_v2 = input_size_v2
+        self.input_channels = input_channels
+        self.feature_dim = feature_dim
+        self.use_temperature = use_temperature
+        self.temperature = temperature
+        self.first_view = first_view
         self.device = device
 
         if first_view == 'raw':
@@ -339,10 +465,10 @@ class MME(nn.Module):
                 nn.init.orthogonal_(param, 1)
 
 
-class MMEClassifier(nn.Module):
+class SSTClassifier(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, num_class, use_l2_norm, use_dropout, use_batch_norm,
                  device, strides=None):
-        super(MMEClassifier, self).__init__()
+        super(SSTClassifier, self).__init__()
 
         self.input_size = input_size
         self.input_channels = input_channels

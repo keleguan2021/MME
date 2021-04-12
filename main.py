@@ -6,8 +6,9 @@
 @Software: PyCharm
 @Desc    : 
 """
-import argparse
 import os
+import argparse
+import copy
 import pickle
 import random
 import shutil
@@ -15,22 +16,21 @@ import warnings
 
 import numpy as np
 import torch
+import torch.distributed as dist
+import torch.multiprocessing as mp
 import torch.nn as nn
 import torch.optim as optim
-import torch.multiprocessing as mp
-import torch.distributed as dist
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.std import tqdm
 
-from mme import DCC, DCCClassifier, MME, MMEClassifier
+from mme import DCCClassifier, SSTDIS, SSTMMD
 from mme import (
-    adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
+    SEEDSSTDataset, SEEDIVSSTDataset, TwoDataset
 )
 from mme import (
-    SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset,
-    SEEDSSTDataset, SEEDIVSSTDataset, TwoDataset
+    adjust_learning_rate, logits_accuracy, get_performance
 )
 from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
@@ -51,12 +51,15 @@ def parse_args(verbose=True):
     parser = argparse.ArgumentParser()
 
     # Dataset
-    parser.add_argument('--data-path', type=str, default='data/sst_feature/SEED/raw')
+    parser.add_argument('--data-path-v1', type=str, default='data/sst_feature/SEED/raw')
+    parser.add_argument('--data-path-v2', type=str, default='data/sst_feature/SEED/feature')
     parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS'])
+    parser.add_argument('--load-path-v1', type=str, default=None)
+    parser.add_argument('--load-path-v2', type=str, default=None)
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
-    parser.add_argument('--feature-mode', type=str, default='raw', choices=['raw', 'de'])
+    parser.add_argument('--first-view', type=str, default='raw', choices=['raw', 'de'])
 
     # Model
     parser.add_argument('--input-channel', type=int, default=62)
@@ -65,8 +68,9 @@ def parse_args(verbose=True):
     parser.add_argument('--grid-res', type=int, default=16)
 
     # Training
-    parser.add_argument('--only-pretrain', action='store_true')
-    parser.add_argument('--pretrain-epochs', type=int, default=200)
+    parser.add_argument('--iter', dest='iteration', type=int, default=5)
+    parser.add_argument('--warmup-epochs', type=int, default=50)
+    parser.add_argument('--pretrain-epochs', type=int, default=100)
     parser.add_argument('--kfold', type=int, default=10)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--device', type=int, default=0)
@@ -110,7 +114,7 @@ def parse_args(verbose=True):
     return args_parsed
 
 
-def pretrain(run_id, model, dataset, device, args):
+def warmup(run_id, model, dataset, device, args):
     if args.optimizer == 'sgd':
         optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
     elif args.optimizer == 'adam':
@@ -119,7 +123,45 @@ def pretrain(run_id, model, dataset, device, args):
     else:
         raise ValueError('Invalid optimizer!')
 
-    criterion = nn.CrossEntropyLoss().cuda(device)
+    if args.use_dist:
+        sampler = DistributedSampler(dataset, shuffle=True)
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                                 shuffle=(sampler is None), pin_memory=True, drop_last=True, sampler=sampler)
+    else:
+        data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
+                                 shuffle=True, pin_memory=True, drop_last=True)
+
+    model.train()
+    for epoch in range(args.warmup_epochs):
+        losses = []
+        accuracies = []
+        if args.use_dist:
+            data_loader.sampler.set_epoch(epoch)
+        adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
+        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.warmup_epochs}]') as progress_bar:
+            for x1, _, x2, __ in progress_bar:
+                x1 = x1.cuda(device, non_blocking=True)
+                x2 = x2.cuda(device, non_blocking=True)
+
+                loss = model(x1, x2)
+
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                losses.append(loss.item())
+
+                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
+
+
+def pretrain(run_id, model, dataset, device, args):
+    if args.optimizer == 'sgd':
+        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
+    elif args.optimizer == 'adam':
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
+                               amsgrad=True)
+    else:
+        raise ValueError('Invalid optimizer!')
 
     if args.use_dist:
         sampler = DistributedSampler(dataset, shuffle=True)
@@ -268,38 +310,114 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
     if args.use_dist:
         torch.cuda.set_device(gpu)
 
-    if args.feature_mode == 'raw':
-        model = MME((200, args.grid_res, args.grid_res), 1, args.feature_dim, True, 0.07,
-                    gpu if args.use_dist else args.device, mode='sst', strides=(1, 2, 2, 2), use_dist=args.use_dist)
-    else:
-        model = MME((5, args.grid_res, args.grid_res), 1, args.feature_dim, True, 0.07,
-                    gpu if args.use_dist else args.device, mode='sst', strides=(1, 1, 2, 2), use_dist=args.use_dist)
-    if args.use_dist:
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model.cuda(gpu)
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
-        model_without_ddp = model.module
-    else:
-        model.cuda(args.device)
-
     if args.data_name == 'SEED':
-        train_dataset = SEEDSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v1 = SEEDSSTDataset(args.data_path_v1, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v2 = SEEDSSTDataset(args.data_path_v2, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'SEED-IV':
-        train_dataset = SEEDIVSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v1 = SEEDIVSSTDataset(args.data_path_v1, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v2 = SEEDIVSSTDataset(args.data_path_v2, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'DEAP':
-        train_dataset = DEAPSSTDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v1 = DEAPSSTDataset(args.data_path_v1, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset_v2 = DEAPSSTDataset(args.data_path_v2, args.num_seq, train_patients, label_dim=args.label_dim)
     else:
         raise ValueError
 
-    pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
-    if args.use_dist:
-        torch.save(model.module.state_dict(),
-                   os.path.join(args.save_path, f'dcc_{args.feature_mode}_pretrained.pth.tar'))
-    else:
-        torch.save(model.state_dict(),
-                   os.path.join(args.save_path, f'dcc_{args.feature_mode}_pretrained.pth.tar'))
+    train_dataset = TwoDataset(train_dataset_v1, train_dataset_v2)
 
-    if not args.only_pretrain and gpu == 0:
+    if args.load_path_v1 is not None and args.load_path_v2 is not None:
+        assert os.path.isfile(args.load_path_v1), f'Invalid file path {args.load_path_v1}!'
+        assert os.path.isfile(args.load_path_v2), f'Invalid file path {args.load_path_v2}!'
+
+        state_dict_v1 = torch.load(args.load_path_v1)
+        state_dict_v2 = torch.load(args.load_path_v2)
+    else:
+        print(f'[INFO] Training from scratch...')
+        if args.first_view == 'raw':
+            model = SSTDIS(input_size_v1=(200, args.grid_res, args.grid_res),
+                           input_size_v2=(5, args.grid_res, args.grid_res),
+                           input_channels=1, feature_dim=args.feature_dim, use_temperature=False,
+                           temperature=1, device=gpu if args.use_dist else args.device,
+                           strides=None, first_view='raw')
+        else:
+            model = SSTDIS(input_size_v1=(5, args.grid_res, args.grid_res),
+                           input_size_v2=(200, args.grid_res, args.grid_res),
+                           input_channels=1, feature_dim=args.feature_dim, use_temperature=False,
+                           temperature=1, device=gpu if args.use_dist else args.device,
+                           strides=None, first_view='freq')
+        model = model.cuda(args.device)
+
+        warmup(run_id, model, train_dataset, args.device, args)
+
+    assert args.iteration % 2 == 1
+
+    for it in range(args.iteration):
+        reverse = False
+        if it % 2 == 1:
+            reverse = True
+
+        if reverse:
+            print(f'[INFO] Iteration {it + 1}, train the second view...')
+        else:
+            print(f'[INFO] Iteration {it + 1}, train the first view...')
+
+        if not reverse:
+            if args.first_view == 'raw':
+                model = SSTMMD(input_size_v1=(200, args.grid_res, args.grid_res),
+                               input_size_v2=(5, args.grid_res, args.grid_res), input_channels=1,
+                               feature_dim=args.feature_dim,
+                               use_temperature=False, temperature=1, device=gpu if args.use_dist else args.device,
+                               strides=None, first_view='raw')
+            else:
+                model = SSTMMD(input_size_v1=(5, args.grid_res, args.grid_res),
+                               input_size_v2=(200, args.grid_res, args.grid_res), input_channels=1,
+                               feature_dim=args.feature_dim,
+                               use_temperature=False, temperature=1, device=gpu if args.use_dist else args.device,
+                               strides=None, first_view='freq')
+        else:
+            if args.first_view == 'raw':
+                model = SSTMMD(input_size_v1=(5, args.grid_res, args.grid_res),
+                               input_size_v2=(200, args.grid_res, args.grid_res), input_channels=1,
+                               feature_dim=args.feature_dim,
+                               use_temperature=False, temperature=1, device=gpu if args.use_dist else args.device,
+                               strides=None, first_view='freq')
+            else:
+                model = SSTMMD(input_size_v1=(200, args.grid_res, args.grid_res),
+                               input_size_v2=(5, args.grid_res, args.grid_res), input_channels=1,
+                               feature_dim=args.feature_dim,
+                               use_temperature=False, temperature=1, device=gpu if args.use_dist else args.device,
+                               strides=None, first_view='raw')
+
+        if args.use_dist:
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model.cuda(gpu)
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[gpu])
+            model_without_ddp = model.module
+        else:
+            model.cuda(args.device)
+
+        # Second view as sampler
+        new_dict = {}
+        new_state_dict_v2 = copy.deepcopy(state_dict_v2)
+        for k, v in new_state_dict_v2.items():
+            if 'encoder.' in k:
+                k = k.replace('encoder.', 'sampler.')
+                new_dict[k] = v
+        new_state_dict_v2 = new_dict
+
+        # First view as encoder k
+        new_state_dict_v1 = copy.deepcopy(state_dict_v1)
+
+        state_dict = {**new_state_dict_v1, **new_state_dict_v2}
+        try:
+            model.load_state_dict(state_dict, strict=False)
+        except Exception as e:
+            print(e)
+            # print(list(state_dict.keys()))
+            exit(-1)
+
+        pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
+
+    if gpu == 0:
         print('[INFO] Start finetuning on the first gpu...')
 
         # Finetuning
