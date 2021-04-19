@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, SubsetRandomSampler
 from torch.utils.data.distributed import DistributedSampler
 from tqdm.std import tqdm
 
-from mme import DCCClassifier, SSTDIS, SSTMMD
+from mme import DCCClassifier, SSTDIS, SSTMMD, SSTClassifier
 from mme import (
     SEEDSSTDataset, SEEDIVSSTDataset, TwoDataset
 )
@@ -179,17 +179,11 @@ def pretrain(run_id, model, dataset, device, args):
             data_loader.sampler.set_epoch(epoch)
         adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
-            for x, _ in progress_bar:
-                x = x.cuda(device, non_blocking=True)
+            for x1, _, x2, __ in progress_bar:
+                x1 = x1.cuda(device, non_blocking=True)
+                x2 = x2.cuda(device, non_blocking=True)
 
-                # output, target = model(x)
-
-                # loss = criterion(output, target)
-
-                loss = model(x)
-
-                # acc = logits_accuracy(output, target, topk=(1,))[0]
-                # accuracies.append(acc)
+                loss = model(x1, x2)
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -243,10 +237,11 @@ def finetune(classifier, dataset, device, args):
         losses = []
         accuracies = []
         with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.finetune_epochs}]') as progress_bar:
-            for x, y in progress_bar:
-                x, y = x.cuda(device, non_blocking=True), y.cuda(device, non_blocking=True)
+            for x1, y, x2, _ in progress_bar:
+                x1, y = x1.cuda(device, non_blocking=True), y.cuda(device, non_blocking=True)
+                x2 = x2.cuda(device, non_blocking=True)
 
-                out = classifier(x)
+                out = classifier(x1, x2)
                 loss = criterion(out.view(args.batch_size * args.num_seq, -1), y.view(-1))
 
                 optimizer.zero_grad()
@@ -269,10 +264,11 @@ def evaluate(classifier, dataset, device, args):
 
     classifier.eval()
     with torch.no_grad():
-        for x, y in data_loader:
-            x = x.cuda(device, non_blocking=True)
+        for x1, y, x2, _ in tqdm(data_loader, desc='EVAL'):
+            x1 = x1.cuda(device, non_blocking=True)
+            x2 = x2.cuda(device, non_blocking=True)
 
-            out = classifier(x)
+            out = classifier(x1, x2)
             scores.append(out.view(args.batch_size * args.num_seq, -1).cpu().numpy())
             targets.append(y.view(-1).numpy())
 
@@ -348,6 +344,26 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
         warmup(run_id, model, train_dataset, args.device, args)
 
+        state_dict_v1 = model.state_dict()
+        state_dict_v2 = copy.deepcopy(state_dict_v1)
+
+        new_state_dict_v1 = {}
+        for key, value in state_dict_v1.items():
+            if 'encoder_q.' in key:
+                key = key.replace('encoder_q.', 'encoder.')
+                new_state_dict_v1[key] = value
+        state_dict_v1 = new_state_dict_v1
+        torch.save(state_dict_v1, os.path.join(args.save_path, f'dcc_warmup_{args.first_view}.pth.tar'))
+
+        new_state_dict_v2 = {}
+        for key, value in state_dict_v2.items():
+            if 'encoder_s.' in key:
+                key = key.replace('encoder_s.', 'encoder.')
+                new_state_dict_v2[key] = value
+        state_dict_v2 = new_state_dict_v2
+        torch.save(state_dict_v2,
+                   os.path.join(args.save_path, f"dcc_warmup_{'freq' if args.first_view == 'raw' else 'raw'}.pth.tar"))
+
     assert args.iteration % 2 == 1
 
     for it in range(args.iteration):
@@ -361,6 +377,7 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
             print(f'[INFO] Iteration {it + 1}, train the first view...')
 
         if not reverse:
+            train_dataset = TwoDataset(train_dataset_v1, train_dataset_v2)
             if args.first_view == 'raw':
                 model = SSTMMD(input_size_v1=(200, args.grid_res, args.grid_res),
                                input_size_v2=(5, args.grid_res, args.grid_res), input_channels=1,
@@ -374,6 +391,7 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
                                use_temperature=False, temperature=1, device=gpu if args.use_dist else args.device,
                                strides=None, first_view='freq')
         else:
+            train_dataset = TwoDataset(train_dataset_v2, train_dataset_v1)
             if args.first_view == 'raw':
                 model = SSTMMD(input_size_v1=(5, args.grid_res, args.grid_res),
                                input_size_v2=(200, args.grid_res, args.grid_res), input_channels=1,
@@ -417,6 +435,10 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
         pretrain(run_id, model, train_dataset, gpu if args.use_dist else args.device, args)
 
+        # Update the state dict
+        state_dict_v1 = model.state_dict()
+        state_dict_v1, state_dict_v2 = state_dict_v2, state_dict_v1
+
     if gpu == 0:
         print('[INFO] Start finetuning on the first gpu...')
 
@@ -430,18 +452,24 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
             use_l2_norm = False
             use_final_bn = False
 
-        if args.feature_mode == 'raw':
-            classifier = DCCClassifier(input_size=(200, args.grid_res, args.grid_res), input_channels=1,
+        if args.first_view == 'raw':
+            classifier = SSTClassifier(input_size_v1=(200, args.grid_res, args.grid_res),
+                                       input_size_v2=(5, args.grid_res, args.grid_res),
+                                       input_channels=1,
                                        feature_dim=args.feature_dim,
                                        num_class=args.classes,
                                        use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                       device=gpu if args.use_dist else args.device, mode='sst', strides=(1, 2, 2, 2))
+                                       device=gpu if args.use_dist else args.device, strides=(1, 2, 2, 2),
+                                       first_view=args.first_view)
         else:
-            classifier = DCCClassifier(input_size=(5, args.grid_res, args.grid_res), input_channels=1,
+            classifier = SSTClassifier(input_size_v1=(5, args.grid_res, args.grid_res),
+                                       input_size_v2=(200, args.grid_res, args.grid_res),
+                                       input_channels=1,
                                        feature_dim=args.feature_dim,
                                        num_class=args.classes,
                                        use_dropout=use_dropout, use_l2_norm=use_l2_norm, use_batch_norm=use_final_bn,
-                                       device=gpu if args.use_dist else args.device, mode='sst', strides=(1, 1, 2, 2))
+                                       device=gpu if args.use_dist else args.device, strides=(1, 1, 2, 2),
+                                       first_view=args.first_view)
 
         classifier.cuda(gpu)
 
@@ -452,17 +480,26 @@ def run(gpu, ngpus_per_node, run_id, train_patients, test_patients, args):
 
         finetune(classifier, train_dataset, gpu if args.use_dist else args.device, args)
 
+        del train_dataset
+        del train_dataset_v1
+        del train_dataset_v2
+
         if args.data_name == 'SEED':
-            test_dataset = SEEDSSTDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+            test_dataset_v1 = SEEDSSTDataset(args.data_path_v1, args.num_seq, test_patients, label_dim=args.label_dim)
+            test_dataset_v2 = SEEDSSTDataset(args.data_path_v2, args.num_seq, test_patients, label_dim=args.label_dim)
         elif args.data_name == 'SEED-IV':
-            test_dataset = SEEDIVSSTDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
-        # elif args.data_name == 'DEAP':
-        #     test_dataset = DEAPDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+            test_dataset_v1 = SEEDIVSSTDataset(args.data_path_v1, args.num_seq, test_patients,
+                                               label_dim=args.label_dim)
+            test_dataset_v2 = SEEDIVSSTDataset(args.data_path_v2, args.num_seq, test_patients,
+                                               label_dim=args.label_dim)
+        elif args.data_name == 'DEAP':
+            test_dataset_v1 = DEAPSSTDataset(args.data_path_v1, args.num_seq, test_patients, label_dim=args.label_dim)
+            test_dataset_v2 = DEAPSSTDataset(args.data_path_v2, args.num_seq, test_patients, label_dim=args.label_dim)
         else:
             raise ValueError
 
-        # test_dataset = eval(f'{args.data_name}Dataset')(args.data_path, args.num_seq, test_patients,
-        #                                                    label_dim=args.label_dim)
+        test_dataset = TwoDataset(test_dataset_v1, test_dataset_v2)
+
         scores, targets = evaluate(classifier, test_dataset, gpu if args.use_dist else args.device, args)
         performance = get_performance(scores, targets)
         with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:

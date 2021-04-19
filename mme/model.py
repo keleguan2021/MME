@@ -233,15 +233,15 @@ class SSTDIS(nn.Module):
         self.mask = None
 
         if first_view == 'raw':
-            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
-                                     feature_dim=feature_dim, feature_mode='raw')
-            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
-                                     feature_dim=feature_dim, feature_mode='freq')
+            self.encoder_q = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                       feature_dim=feature_dim, feature_mode='raw')
+            self.encoder_s = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                       feature_dim=feature_dim, feature_mode='freq')
         else:
-            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
-                                     feature_dim=feature_dim, feature_mode='freq')
-            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
-                                     feature_dim=feature_dim, feature_mode='raw')
+            self.encoder_q = Encoder3d(input_size=input_size_v1, input_channel=input_channels,
+                                       feature_dim=feature_dim, feature_mode='freq')
+            self.encoder_s = Encoder3d(input_size=input_size_v2, input_channel=input_channels,
+                                       feature_dim=feature_dim, feature_mode='raw')
 
     @torch.no_grad()
     def _batch_shuffle_ddp(self, x):
@@ -295,12 +295,12 @@ class SSTDIS(nn.Module):
         # x: (batch, num_seq, channel, seq_len)
         batch_size, num_epoch, time_len, width, height = x1.shape
         x1 = x1.view(batch_size * num_epoch, 1, *x1.shape[2:])
-        feature_k = self.encoder(x1)
+        feature_k = self.encoder_q(x1)
         feature_k = F.normalize(feature_k, p=2, dim=1)
         feature_k = feature_k.view(batch_size, num_epoch, self.feature_dim)
 
         x2 = x2.view(batch_size * num_epoch, 1, *x2.shape[2:])
-        feature_s = self.sampler(x2)
+        feature_s = self.encoder_s(x2)
         feature_s = F.normalize(feature_s, p=2, dim=1)
         feature_s = feature_s.view(batch_size, num_epoch, self.feature_dim)
 
@@ -448,8 +448,14 @@ class SSTMMD(nn.Module):
         pos = torch.exp(logits.masked_select(mask).view(batch_size, num_epoch, num_epoch)).sum(-1)
         neg = torch.exp(logits.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
                                                                            batch_size * num_epoch - num_epoch))
-        neg_v2 = sim.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
-                                                                 batch_size * num_epoch - num_epoch)
+        neg_v2 = torch.exp(sim.masked_select(torch.logical_not(mask)).view(batch_size, num_epoch,
+                                                                           batch_size * num_epoch - num_epoch))
+        expand_factor = neg_v2.shape[-1] / neg_v2.sum(-1).unsqueeze(-1)
+        neg_v2 *= expand_factor
+
+        # print(pos.max().item(), pos.min().item(), torch.isnan(pos).any().item())
+        # print(neg.max().item(), neg.min().item(), torch.isnan(neg).any().item())
+        # print(neg_v2.max().item(), neg_v2.min().item(), torch.isnan(neg_v2).any().item())
 
         neg = (neg * neg_v2).sum(-1)
 
@@ -466,11 +472,13 @@ class SSTMMD(nn.Module):
 
 
 class SSTClassifier(nn.Module):
-    def __init__(self, input_size, input_channels, feature_dim, num_class, use_l2_norm, use_dropout, use_batch_norm,
-                 device, strides=None):
+    def __init__(self, input_size_v1, input_size_v2, input_channels, feature_dim, num_class, use_l2_norm, use_dropout,
+                 use_batch_norm,
+                 device, strides=None, first_view='raw'):
         super(SSTClassifier, self).__init__()
 
-        self.input_size = input_size
+        self.input_size_v1 = input_size_v1
+        self.input_size_v2 = input_size_v2
         self.input_channels = input_channels
         self.feature_dim = feature_dim
         self.device = device
@@ -478,10 +486,16 @@ class SSTClassifier(nn.Module):
         self.use_dropout = use_dropout
         self.use_batch_norm = use_batch_norm
 
-        self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim,
-                                 feature_mode='raw')
-        self.sampler = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim,
-                                 feature_mode='freq')
+        if first_view == 'raw':
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels, feature_dim=feature_dim,
+                                     feature_mode='raw')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels, feature_dim=feature_dim,
+                                     feature_mode='freq')
+        else:
+            self.encoder = Encoder3d(input_size=input_size_v1, input_channel=input_channels, feature_dim=feature_dim,
+                                     feature_mode='freq')
+            self.sampler = Encoder3d(input_size=input_size_v2, input_channel=input_channels, feature_dim=feature_dim,
+                                     feature_mode='raw')
 
         final_fc = []
 
