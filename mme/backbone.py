@@ -9,6 +9,7 @@
 import torch
 
 from .backbone_1d import Encoder, R1DNet
+from .backbone_2d import ResNet
 from .backbone_3d import ResNet2d3d, Encoder3d
 
 if __name__ == '__main__':

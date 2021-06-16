@@ -1,8 +1,6 @@
 """
-@Time    : 2021/2/4 12:22
-@Author  : Xiao Qinfeng
-@Email   : qfxiao@bjtu.edu.cn
-@File    : main_dcc.py
+@Time    : 2021/6/16 21:05
+@File    : eval_dcc.py
 @Software: PyCharm
 @Desc    : 
 """
@@ -23,8 +21,9 @@ from tqdm.std import tqdm
 
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
-from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset
-from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
+from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SleepDataset, SleepDatasetImg
+from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT, \
+    ISRUC_NUM_SUBJECT, SLEEPEDF_NUM_SUBJECT
 
 
 def setup_seed(seed):
@@ -44,10 +43,13 @@ def parse_args(verbose=True):
 
     # Dataset
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
-    parser.add_argument('--data-name', type=str, default='SEED', choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS'])
+    parser.add_argument('--data-name', type=str, default='SEED',
+                        choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS', 'ISRUC', 'SLEEPEDF'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
-    parser.add_argument('--classes', type=int, default=3)
+    parser.add_argument('--load-path', type=str, required=True)
+    parser.add_argument('--classes', type=int, default=5)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
+    parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='standard')
 
     # Model
     parser.add_argument('--input-channel', type=int, default=62)
@@ -55,7 +57,7 @@ def parse_args(verbose=True):
     parser.add_argument('--num-seq', type=int, default=10)
 
     # Training
-    parser.add_argument('--pretrain-epochs', type=int, default=200)
+    # parser.add_argument('--pretrain-epochs', type=int, default=200)
     parser.add_argument('--kfold', type=int, default=10)
     parser.add_argument('--fold', type=int, default=0)
     parser.add_argument('--device', type=int, default=0)
@@ -69,7 +71,7 @@ def parse_args(verbose=True):
     parser.add_argument('--finetune-mode', type=str, default='freeze', choices=['freeze', 'smaller', 'all'])
 
     # Optimization
-    parser.add_argument('--optimizer', type=str, default='sgd', choices=['sgd', 'adam'])
+    parser.add_argument('--optimizer', type=str, default='adamw', choices=['sgd', 'adam', 'adamw'])
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--wd', type=float, default=1e-3)
     parser.add_argument('--momentum', type=float, default=0.9, help='Only valid for SGD optimizer')
@@ -91,46 +93,6 @@ def parse_args(verbose=True):
         print(message)
 
     return args_parsed
-
-
-def pretrain(run_id, model, dataset, device, args):
-    if args.optimizer == 'sgd':
-        optimizer = optim.SGD(model.parameters(), lr=args.lr, weight_decay=args.wd, momentum=args.momentum)
-    elif args.optimizer == 'adam':
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
-                               amsgrad=True)
-    else:
-        raise ValueError('Invalid optimizer!')
-
-    criterion = nn.CrossEntropyLoss().cuda(device)
-
-    data_loader = DataLoader(dataset, batch_size=args.batch_size, num_workers=args.num_workers,
-                             shuffle=True, pin_memory=True, drop_last=True)
-
-    model.train()
-    for epoch in range(args.pretrain_epochs):
-        losses = []
-        accuracies = []
-        adjust_learning_rate(optimizer, args.lr, epoch, args.pretrain_epochs, args)
-        with tqdm(data_loader, desc=f'EPOCH [{epoch + 1}/{args.pretrain_epochs}]') as progress_bar:
-            for x, _ in progress_bar:
-                x = x.cuda(device, non_blocking=True)
-
-                # output, target = model(x)
-                #
-                # loss = criterion(output, target)
-                # acc = logits_accuracy(output, target, topk=(1,))[0]
-                # accuracies.append(acc)
-
-                loss = model(x)
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                losses.append(loss.item())
-
-                progress_bar.set_postfix({'Loss': np.mean(losses), 'Acc': np.mean(accuracies)})
 
 
 def finetune(classifier, dataset, device, args):
@@ -159,6 +121,8 @@ def finetune(classifier, dataset, device, args):
     elif args.optimizer == 'adam':
         optimizer = optim.Adam(params, lr=args.lr, weight_decay=args.wd, betas=(0.9, 0.98), eps=1e-09,
                                amsgrad=True)
+    elif args.optimizer == 'adamw':
+        optimizer = optim.AdamW(params, weight_decay=args.wd, lr=args.lr)
     else:
         raise ValueError('Invalid optimizer!')
 
@@ -215,7 +179,7 @@ def evaluate(classifier, dataset, device, args):
     return scores, targets
 
 
-def run(run_id, train_patients, test_patients, args):
+def main_worker(run_id, train_patients, test_patients, args):
     print('Train patient ids:', train_patients)
     print('Test patient ids:', test_patients)
 
@@ -225,11 +189,12 @@ def run(run_id, train_patients, test_patients, args):
         input_size = 128
     elif args.data_name == 'AMIGOS':
         input_size = 128
+    elif args.data_name == 'ISRUC':
+        input_size = 200
+    elif args.data_name == 'SLEEPEDF':
+        input_size = 100
     else:
         raise ValueError
-
-    model = DCC(input_size, args.input_channel, args.feature_dim, True, 0.07, args.device)
-    model.cuda(args.device)
 
     if args.data_name == 'SEED':
         train_dataset = SEEDDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
@@ -239,10 +204,14 @@ def run(run_id, train_patients, test_patients, args):
         train_dataset = DEAPDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'AMIGOS':
         train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+    elif args.data_name == 'ISRUC':
+        train_dataset = SleepDataset(args.data_path, 'isruc', args.num_seq, train_patients,
+                                     preprocessing=args.preprocessing)
+    elif args.data_name == 'SLEEPEDF':
+        train_dataset = SleepDataset(args.data_path, 'sleepedf', args.num_seq, train_patients,
+                                     preprocessing=args.preprocessing)
     else:
         raise ValueError
-
-    pretrain(run_id, model, train_dataset, args.device, args)
 
     # Finetuning
     if args.finetune_mode == 'freeze':
@@ -260,8 +229,9 @@ def run(run_id, train_patients, test_patients, args):
                                device=args.device)
     classifier.cuda(args.device)
 
-    classifier.load_state_dict(model.state_dict(), strict=False)
+    classifier.load_state_dict(torch.load(args.load_path), strict=False)
 
+    print('[INFO] Start fine-tuning...')
     finetune(classifier, train_dataset, args.device, args)
 
     if args.data_name == 'SEED':
@@ -272,8 +242,15 @@ def run(run_id, train_patients, test_patients, args):
         test_dataset = DEAPDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
     elif args.data_name == 'AMIGOS':
         test_dataset = AMIGOSDataset(args.data_path, args.num_seq, test_patients, label_dim=args.label_dim)
+    elif args.data_name == 'ISRUC':
+        test_dataset = SleepDataset(args.data_path, 'isruc', args.num_seq, test_patients,
+                                    preprocessing=args.preprocessing)
+    elif args.data_name == 'SLEEPEDF':
+        test_dataset = SleepDataset(args.data_path, 'sleepedf', args.num_seq, test_patients,
+                                    preprocessing=args.preprocessing)
     else:
         raise ValueError
+
     scores, targets = evaluate(classifier, test_dataset, args.device, args)
     performance = get_performance(scores, targets)
     with open(os.path.join(args.save_path, f'statistics_{run_id}.pkl'), 'wb') as f:
@@ -296,17 +273,24 @@ if __name__ == '__main__':
         os.makedirs(args.save_path)
 
     if args.data_name == 'SEED':
-        num_patients = SEED_NUM_SUBJECT
+        patients = np.arange(SEED_NUM_SUBJECT)
     elif args.data_name == 'SEED-IV':
-        num_patients = SEED_IV_NUM_SUBJECT
+        patients = np.arange(SEED_IV_NUM_SUBJECT)
     elif args.data_name == 'DEAP':
-        num_patients = DEAP_NUM_SUBJECT
+        patients = np.arange(DEAP_NUM_SUBJECT)
     elif args.data_name == 'AMIGOS':
-        num_patients = AMIGOS_NUM_SUBJECT
+        patients = np.arange(AMIGOS_NUM_SUBJECT)
+    elif args.data_name == 'ISRUC' or args.data_name == 'SLEEPEDF':
+        files = os.listdir(args.data_path)
+        patients = []
+        for a_file in files:
+            if a_file.endswith('.npz'):
+                patients.append(a_file)
+
+        patients = sorted(patients)
+        patients = np.asarray(patients)
     else:
         raise ValueError
-
-    patients = np.arange(num_patients)
 
     assert args.kfold <= len(patients)
     assert args.fold < args.kfold
@@ -315,5 +299,5 @@ if __name__ == '__main__':
         if i == args.fold:
             print(f'[INFO] Running cross validation for {i + 1}/{args.kfold} fold...')
             train_patients, test_patients = patients[train_index].tolist(), patients[test_index].tolist()
-            run(i, train_patients, test_patients, args)
+            main_worker(i, train_patients, test_patients, args)
             break
