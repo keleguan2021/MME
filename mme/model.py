@@ -48,6 +48,8 @@ class DCC(nn.Module):
         elif mode == 'sst':
             # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
             self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+        elif mode == 'img':
+            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
         else:
             raise ValueError
 
@@ -56,8 +58,8 @@ class DCC(nn.Module):
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
-        if self.mode == 'raw':
-            batch_size, num_epoch, channel, time_len = x.shape
+        if self.mode == 'raw' or self.mode == 'img':
+            batch_size, num_epoch, channel, *_ = x.shape
             x = x.view(batch_size * num_epoch, *x.shape[2:])
         else:
             batch_size, num_epoch, time_len, width, height = x.shape

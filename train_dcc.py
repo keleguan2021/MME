@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision.transforms as TF
 from sklearn.model_selection import KFold
 from torch.utils.data import DataLoader, SubsetRandomSampler
 from tqdm.std import tqdm
@@ -56,6 +57,7 @@ def parse_args(verbose=True):
     parser.add_argument('--input-channel', type=int, default=62)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--num-seq', type=int, default=10)
+    parser.add_argument('--mode', type=str, default='raw', choices=['raw', 'sst', 'img'])
 
     # Training
     parser.add_argument('--pretrain-epochs', type=int, default=200)
@@ -155,7 +157,7 @@ def main_worker(run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
-    model = DCC(input_size, args.input_channel, args.feature_dim, False, 0.07, args.device)
+    model = DCC(input_size, args.input_channel, args.feature_dim, False, 0.07, args.device, mode=args.mode)
     model.cuda(args.device)
 
     if args.data_name == 'SEED':
@@ -167,18 +169,34 @@ def main_worker(run_id, train_patients, test_patients, args):
     elif args.data_name == 'AMIGOS':
         train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'ISRUC':
-        train_dataset = SleepDataset(args.data_path, 'isruc', args.num_seq, train_patients,
-                                     preprocessing=args.preprocessing)
+        if args.mode == 'raw':
+            train_dataset = SleepDataset(args.data_path, 'isruc', args.num_seq, train_patients,
+                                         preprocessing=args.preprocessing)
+        elif args.mode == 'img':
+            transform = TF.Compose(
+                [TF.Resize((64, 64)), TF.ToTensor()]
+            )
+            train_dataset = SleepDatasetImg(args.data_path, 'isruc', args.num_seq, transform, train_patients)
+        else:
+            raise ValueError
     elif args.data_name == 'SLEEPEDF':
-        train_dataset = SleepDataset(args.data_path, 'sleepedf', args.num_seq, train_patients,
-                                     preprocessing=args.preprocessing)
+        if args.mode == 'raw':
+            train_dataset = SleepDataset(args.data_path, 'sleepedf', args.num_seq, train_patients,
+                                         preprocessing=args.preprocessing)
+        elif args.mode == 'img':
+            transform = TF.Compose(
+                [TF.Resize((64, 64)), TF.ToTensor()]
+            )
+            train_dataset = SleepDatasetImg(args.data_path, 'sleepedf', args.num_seq, transform, train_patients)
+        else:
+            raise ValueError
     else:
         raise ValueError
 
     print('[INFO] Start pretraining...')
     pretrain(run_id, model, train_dataset, args.device, args)
     torch.save(model.state_dict(),
-               os.path.join(args.save_path, f'dcc_{run_id}_pretrain_final.pth.tar'))
+               os.path.join(args.save_path, f'dcc_{args.mode}_{run_id}_pretrain_final.pth.tar'))
 
 
 if __name__ == '__main__':
