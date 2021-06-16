@@ -51,53 +51,6 @@ class DCC(nn.Module):
 
         self.targets = None
 
-    @torch.no_grad()
-    def _batch_shuffle_ddp(self, x):
-        '''
-        Batch shuffle, for making use of BatchNorm.
-        *** Only support DistributedDataParallel (DDP) model. ***
-        '''
-        # gather from all gpus
-        batch_size_this = x.shape[0]
-        x_gather = concat_all_gather(x)
-        batch_size_all = x_gather.shape[0]
-
-        num_gpus = batch_size_all // batch_size_this
-
-        # random shuffle index
-        idx_shuffle = torch.randperm(batch_size_all).cuda()
-
-        # broadcast to all gpus
-        torch.distributed.broadcast(idx_shuffle, src=0)
-
-        # index for restoring
-        idx_unshuffle = torch.argsort(idx_shuffle)
-
-        # shuffled index for this gpu
-        gpu_idx = torch.distributed.get_rank()
-        idx_this = idx_shuffle.view(num_gpus, -1)[gpu_idx]
-
-        return x_gather[idx_this], idx_unshuffle
-
-    @torch.no_grad()
-    def _batch_unshuffle_ddp(self, x, idx_unshuffle):
-        '''
-        Undo batch shuffle.
-        *** Only support DistributedDataParallel (DDP) model. ***
-        '''
-        # gather from all gpus
-        batch_size_this = x.shape[0]
-        x_gather = concat_all_gather(x)
-        batch_size_all = x_gather.shape[0]
-
-        num_gpus = batch_size_all // batch_size_this
-
-        # restored index for this gpu
-        gpu_idx = torch.distributed.get_rank()
-        idx_this = idx_unshuffle.view(num_gpus, -1)[gpu_idx]
-
-        return x_gather[idx_this]
-
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
@@ -131,28 +84,6 @@ class DCC(nn.Module):
         loss = (-torch.log(pos / (pos + neg))).mean()
 
         return loss
-
-        # Compute scores
-        # logits = torch.einsum('ijk,kmn->ijmn', [pred, feature])  # (batch, pred_step, num_seq, batch)
-        # logits = logits.view(batch_size * self.pred_steps, num_epoch * batch_size)
-
-        # logits = torch.einsum('ijk,mnk->ijnm', [feature, feature])
-        # # print('3. Logits: ', logits.shape)
-        # logits = logits.view(batch_size * num_epoch, num_epoch * batch_size)
-        # if self.use_temperature:
-        #     logits /= self.temperature
-        #
-        # if self.targets is None:
-        #     targets = torch.zeros(batch_size, num_epoch, num_epoch, batch_size)
-        #     for i in range(batch_size):
-        #         for j in range(num_epoch):
-        #             targets[i, j, :, i] = 1
-        #     targets = targets.view(batch_size * num_epoch, num_epoch * batch_size)
-        #     targets = targets.argmax(dim=1)
-        #     targets = targets.cuda(device=self.device)
-        #     self.targets = targets
-        #
-        # return logits, self.targets
 
     def _initialize_weights(self, module):
         for name, param in module.named_parameters():
