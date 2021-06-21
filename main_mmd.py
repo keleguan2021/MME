@@ -2,7 +2,7 @@
 @Time    : 2021/4/1 20:21
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : main.py
+@File    : main_mmd.py
 @Software: PyCharm
 @Desc    : 
 """
