@@ -29,7 +29,7 @@ from mme.backbone.backbones import Encoder, Encoder3d, ResNet2d3d, R1DNet, ResNe
 
 class DCC(nn.Module):
     def __init__(self, input_size, input_channels, feature_dim, use_temperature, temperature, device, strides=None,
-                 mode='raw', use_dist=False):
+                 use_dist=False):
         super(DCC, self).__init__()
 
         self.input_size = input_size
@@ -38,32 +38,31 @@ class DCC(nn.Module):
         self.use_temperature = use_temperature
         self.temperature = temperature
         self.device = device
-        self.mode = mode
         self.use_dist = use_dist
 
-        if mode == 'raw':
-            self.encoder = R1DNet(input_channels, mid_channel=16, feature_dim=feature_dim, stride=2,
-                                  kernel_size=[7, 11, 11, 7],
-                                  final_fc=True)
-        elif mode == 'sst':
-            # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
-            self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
-        elif mode == 'img':
-            self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
-        else:
-            raise ValueError
+        # if mode == 'raw':
+        self.encoder = R1DNet(input_channels, mid_channel=16, feature_dim=feature_dim, stride=2,
+                              kernel_size=[7, 11, 11, 7],
+                              final_fc=True)
+        # elif mode == 'sst':
+        #     # self.encoder = ResNet2d3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+        #     self.encoder = Encoder3d(input_size=input_size, input_channel=input_channels, feature_dim=feature_dim)
+        # elif mode == 'img':
+        #     self.encoder = ResNet(input_channels=input_channels, num_classes=feature_dim)
+        # else:
+        #     raise ValueError
 
         self.targets = None
 
     def forward(self, x):
         # Extract feautres
         # x: (batch, num_seq, channel, seq_len)
-        if self.mode == 'raw' or self.mode == 'img':
-            batch_size, num_epoch, channel, *_ = x.shape
-            x = x.view(batch_size * num_epoch, *x.shape[2:])
-        else:
-            batch_size, num_epoch, time_len, width, height = x.shape
-            x = x.view(batch_size * num_epoch, 1, *x.shape[2:])
+        # if self.mode == 'raw' or self.mode == 'img':
+        batch_size, num_epoch, channel, *_ = x.shape
+        x = x.view(batch_size * num_epoch, *x.shape[2:])
+        # else:
+        #     batch_size, num_epoch, time_len, width, height = x.shape
+        #     x = x.view(batch_size * num_epoch, 1, *x.shape[2:])
         feature = self.encoder(x)
         feature = F.normalize(feature, p=2, dim=1)
         feature = feature.view(batch_size, num_epoch, self.feature_dim)

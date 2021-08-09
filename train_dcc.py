@@ -169,7 +169,7 @@ def main_worker(run_id, train_patients, test_patients, args):
         raise ValueError
 
     model = DCC(input_size, args.input_channel if args.input_channel is not None else train_dataset.channels,
-                args.feature_dim, False, 0.07, args.device, mode=args.mode)
+                args.feature_dim, False, 0.07, args.device)
     model.cuda(args.device)
 
     print('[INFO] Start pretraining...')
