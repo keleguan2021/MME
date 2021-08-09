@@ -9,11 +9,11 @@
 import os
 from typing import List
 
-import torch
 import numpy as np
 import scipy.io as sio
-from tqdm.std import tqdm
+import torch
 from torch.utils.data import Dataset
+from tqdm.std import tqdm
 
 
 class DEAPDataset(Dataset):
@@ -21,9 +21,11 @@ class DEAPDataset(Dataset):
     num_subject = 32
     sampling_rate = 128
 
-    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, modal='eeg', transform=None):
         self.label_dim = label_dim
         self.transform = transform
+
+        assert modal in ['eeg', 'emg', 'eog']
 
         files = sorted(os.listdir(data_path))
         assert len(files) == self.num_subject
@@ -36,6 +38,15 @@ class DEAPDataset(Dataset):
             subject_data = data['data']  # trial x channel x data
             subject_label = data['labels']  # trial x label (valence, arousal, dominance, liking)
             # subject_data = tensor_standardize(subject_data, dim=-1)
+
+            if modal == 'eeg':
+                subject_data = subject_data[:, :32, :]
+            elif modal == 'eog':
+                subject_data = subject_data[:, 32: 36, :]
+            elif modal == 'emg':
+                subject_data = subject_data[:, 36:, :]
+            else:
+                raise ValueError
 
             subject_data = subject_data.reshape(*subject_data.shape[:2], subject_data.shape[-1] // self.sampling_rate,
                                                 self.sampling_rate)  # (trial, channel, num_sec, time_len)
@@ -65,9 +76,6 @@ class DEAPDataset(Dataset):
             all_data = np.squeeze(all_data)
             # all_labels = np.squeeze(all_labels)
 
-        print(all_data.shape)
-        print(all_labels.shape)
-
         self.data = all_data
         self.labels = all_labels
 
@@ -84,3 +92,7 @@ class DEAPDataset(Dataset):
 
     def __len__(self):
         return len(self.data)
+
+    @property
+    def channels(self):
+        return self.data.shape[2]

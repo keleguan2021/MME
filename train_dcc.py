@@ -8,7 +8,6 @@
 """
 import argparse
 import os
-import pickle
 import random
 import shutil
 import warnings
@@ -17,16 +16,13 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torchvision.transforms as TF
 from sklearn.model_selection import KFold
-from torch.utils.data import DataLoader, SubsetRandomSampler
+from torch.utils.data import DataLoader
 from tqdm.std import tqdm
 
-from mme import DCC, DCCClassifier
-from mme import adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
-from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SleepDataset, SleepDatasetImg
-from mme.data import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT, \
-    ISRUC_NUM_SUBJECT, SLEEPEDF_NUM_SUBJECT
+from mme import DCC
+from mme import adjust_learning_rate
+from mme.data.datasets import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SleepEDFDataset, ISRUCDataset
 
 
 def setup_seed(seed):
@@ -48,16 +44,17 @@ def parse_args(verbose=True):
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
     parser.add_argument('--data-name', type=str, default='SEED',
                         choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS', 'ISRUC', 'SLEEPEDF'])
+    parser.add_argument('--modal', type=str, default='eeg', choices=['eeg', 'eog', 'emg'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
     parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='standard')
 
     # Model
-    parser.add_argument('--input-channel', type=int, default=62)
+    parser.add_argument('--input-channel', type=int, default=None)
     parser.add_argument('--feature-dim', type=int, default=128)
     parser.add_argument('--num-seq', type=int, default=10)
-    parser.add_argument('--mode', type=str, default='raw', choices=['raw', 'sst', 'img'])
+    # parser.add_argument('--mode', type=str, default='raw', choices=['raw', 'sst', 'img'])
 
     # Training
     parser.add_argument('--pretrain-epochs', type=int, default=200)
@@ -123,12 +120,6 @@ def pretrain(run_id, model, dataset, device, args):
             for x, _ in progress_bar:
                 x = x.cuda(device, non_blocking=True)
 
-                # output, target = model(x)
-                #
-                # loss = criterion(output, target)
-                # acc = logits_accuracy(output, target, topk=(1,))[0]
-                # accuracies.append(acc)
-
                 loss = model(x)
 
                 optimizer.zero_grad()
@@ -157,46 +148,34 @@ def main_worker(run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
-    model = DCC(input_size, args.input_channel, args.feature_dim, False, 0.07, args.device, mode=args.mode)
-    model.cuda(args.device)
-
     if args.data_name == 'SEED':
-        train_dataset = SEEDDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset = SEEDDataset(data_path=args.data_path, num_seq=args.num_seq,
+                                    subject_list=train_patients, label_dim=args.label_dim)
     elif args.data_name == 'SEED-IV':
-        train_dataset = SEEDIVDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset = SEEDIVDataset(data_path=args.data_path, num_seq=args.num_seq,
+                                      subject_list=train_patients, label_dim=args.label_dim)
     elif args.data_name == 'DEAP':
-        train_dataset = DEAPDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
-    elif args.data_name == 'AMIGOS':
-        train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
+        train_dataset = DEAPDataset(data_path=args.data_path, num_seq=args.num_seq,
+                                    subject_list=train_patients, label_dim=args.label_dim, modal=args.modal)
+    # elif args.data_name == 'AMIGOS':
+    #     train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'ISRUC':
-        if args.mode == 'raw':
-            train_dataset = SleepDataset(args.data_path, 'isruc', args.num_seq, train_patients,
-                                         preprocessing=args.preprocessing)
-        elif args.mode == 'img':
-            transform = TF.Compose(
-                [TF.Resize((64, 64)), TF.ToTensor()]
-            )
-            train_dataset = SleepDatasetImg(args.data_path, 'isruc', args.num_seq, transform, train_patients)
-        else:
-            raise ValueError
+        train_dataset = ISRUCDataset(data_path=args.data_path, num_epoch=args.num_seq, patients=train_patients,
+                                     modal=args.modal)
     elif args.data_name == 'SLEEPEDF':
-        if args.mode == 'raw':
-            train_dataset = SleepDataset(args.data_path, 'sleepedf', args.num_seq, train_patients,
-                                         preprocessing=args.preprocessing)
-        elif args.mode == 'img':
-            transform = TF.Compose(
-                [TF.Resize((64, 64)), TF.ToTensor()]
-            )
-            train_dataset = SleepDatasetImg(args.data_path, 'sleepedf', args.num_seq, transform, train_patients)
-        else:
-            raise ValueError
+        train_dataset = SleepEDFDataset(data_path=args.data_path, num_epoch=args.num_seq, patients=train_patients,
+                                        modal=args.modal)
     else:
         raise ValueError
+
+    model = DCC(input_size, args.input_channel if args.input_channel is not None else train_dataset.channels,
+                args.feature_dim, False, 0.07, args.device, mode=args.mode)
+    model.cuda(args.device)
 
     print('[INFO] Start pretraining...')
     pretrain(run_id, model, train_dataset, args.device, args)
     torch.save(model.state_dict(),
-               os.path.join(args.save_path, f'dcc_{args.mode}_{run_id}_pretrain_final.pth.tar'))
+               os.path.join(args.save_path, f'dcc_{args.data_name}_{args.modal}_{run_id}_pretrain_final.pth.tar'))
 
 
 if __name__ == '__main__':
@@ -214,13 +193,13 @@ if __name__ == '__main__':
         os.makedirs(args.save_path)
 
     if args.data_name == 'SEED':
-        patients = np.arange(SEED_NUM_SUBJECT)
+        patients = np.arange(SEEDDataset.num_subject)
     elif args.data_name == 'SEED-IV':
-        patients = np.arange(SEED_IV_NUM_SUBJECT)
+        patients = np.arange(SEEDIVDataset.num_subject)
     elif args.data_name == 'DEAP':
-        patients = np.arange(DEAP_NUM_SUBJECT)
+        patients = np.arange(DEAPDataset.num_subject)
     elif args.data_name == 'AMIGOS':
-        patients = np.arange(AMIGOS_NUM_SUBJECT)
+        patients = np.arange(AMIGOSDataset.num_subject)
     elif args.data_name == 'ISRUC' or args.data_name == 'SLEEPEDF':
         files = os.listdir(args.data_path)
         patients = []

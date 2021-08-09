@@ -7,21 +7,22 @@
 # @Software: PyCharm
 
 import os
-import warnings
 from typing import List
 
-import torch
 import numpy as np
-import scipy.io as sio
-from tqdm.std import tqdm
-from torch.utils.data import Dataset
+import torch
 from sklearn.preprocessing import QuantileTransformer
+from torch.utils.data import Dataset
 
-from .utils import EPS, tackle_denominator, tensor_standardize
+from .utils import tensor_standardize
 
 
 class SleepEDFDataset(Dataset):
-    def __init__(self, data_path, num_epoch, transform = None, patients: List = None, preprocessing: str = 'none', modal='eeg',
+    num_subject = 153
+    fs = 200
+
+    def __init__(self, data_path, num_epoch, transform=None, patients: List = None, preprocessing: str = 'none',
+                 modal='eeg',
                  return_idx=False, verbose=True):
         assert isinstance(patients, list)
 
@@ -54,14 +55,6 @@ class SleepEDFDataset(Dataset):
             annotations = data['annotation']
 
             if preprocessing == 'standard':
-                # print(f'[INFO] Applying standard scaler...')
-                # scaler = StandardScaler()
-                # recordings_old = recordings
-                # recordings = []
-                # for j in range(recordings_old.shape[0]):
-                #     recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
-                # recordings = np.stack(recordings, axis=0)
-
                 recordings = tensor_standardize(recordings, dim=-1)
             elif preprocessing == 'quantile':
                 # print(f'[INFO] Applying quantile scaler...')
@@ -122,3 +115,7 @@ Shape of an Instance: {}
 Selected patients: {}
 **********************************************************************
             """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
+
+    @property
+    def channels(self):
+        return self.data.shape[2]

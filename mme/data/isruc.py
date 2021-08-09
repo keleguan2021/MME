@@ -7,21 +7,23 @@
 # @Software: PyCharm
 
 import os
-import warnings
 from typing import List
 
-import torch
 import numpy as np
 import scipy.io as sio
-from tqdm.std import tqdm
-from torch.utils.data import Dataset
+import torch
 from sklearn.preprocessing import QuantileTransformer
+from torch.utils.data import Dataset
 
-from .utils import EPS, tackle_denominator, tensor_standardize
+from .utils import tensor_standardize
 
 
 class ISRUCDataset(Dataset):
-    def __init__(self, data_path, num_epoch, transform=None, patients: List = None, preprocessing: str = 'none', modal='eeg',
+    num_subject = 100
+    fs = 200
+
+    def __init__(self, data_path, num_epoch, transform=None, patients: List = None, preprocessing: str = 'none',
+                 modal='eeg',
                  return_idx=False, verbose=True):
         assert isinstance(patients, list)
 
@@ -41,9 +43,17 @@ class ISRUCDataset(Dataset):
         for i, patient in enumerate(patients):
             if verbose:
                 print(f'[INFO] Processing the {i + 1}-th patient {patient}...')
-            data = np.load(os.path.join(data_path, patient))
-            recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
-                                   data['O1_A2'], data['O2_A1']], axis=1)
+            data = sio.loadmat(os.path.join(data_path, patient))
+            if modal == 'eeg':
+                recordings = np.stack([data['F3_A2'], data['C3_A2'], data['F4_A1'], data['C4_A1'],
+                                       data['O1_A2'], data['O2_A1']], axis=1)
+            elif modal == 'emg':
+                recordings = np.stack([data['X1'], data['X3']], axis=1)
+            elif modal == 'eog':
+                recordings = np.stack([data['LOC_A2'], data['ROC_A1']], axis=1)
+            else:
+                raise ValueError
+
             annotations = data['label'].flatten()
 
             if preprocessing == 'standard':
@@ -65,8 +75,7 @@ class ISRUCDataset(Dataset):
                     recordings.append(scaler.fit_transform(recordings_old[j].transpose()).transpose())
                 recordings = np.stack(recordings, axis=0)
             else:
-                # print(f'[INFO] Convert the unit from V to uV...')
-                recordings *= 1e6
+                pass
 
             if verbose:
                 print(f'[INFO] The shape of the {i + 1}-th patient: {recordings.shape}...')
@@ -115,3 +124,7 @@ Shape of an Instance: {}
 Selected patients: {}
 **********************************************************************
             """.format(self.preprocessing, len(self.data), self.full_shape, self.patients)
+
+    @property
+    def channels(self):
+        return self.data.shape[2]
