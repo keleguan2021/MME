@@ -21,11 +21,12 @@ from .utils import EPS, tackle_denominator, tensor_standardize
 
 
 class SleepEDFDataset(Dataset):
-    def __init__(self, data_path, num_epoch, patients: List = None, preprocessing: str = 'none', modal='eeg',
+    def __init__(self, data_path, num_epoch, transform = None, patients: List = None, preprocessing: str = 'none', modal='eeg',
                  return_idx=False, verbose=True):
         assert isinstance(patients, list)
 
         self.data_path = data_path
+        self.transform = transform
         self.patients = patients
         self.preprocessing = preprocessing
         self.modal = modal
@@ -94,8 +95,14 @@ class SleepEDFDataset(Dataset):
         x = self.data[item]
         y = self.labels[item]
 
-        x = torch.from_numpy(x.astype(np.float32))
-        y = torch.from_numpy(y.astype(np.long))
+        x = x.astype(np.float32)
+        y = y.astype(np.long)
+
+        if self.transform is not None:
+            x = self.transform(x)
+
+        x = torch.from_numpy(x)
+        y = torch.from_numpy(y)
 
         if self.return_idx:
             return x, y, torch.from_numpy(self.idx[item].astype(np.long))

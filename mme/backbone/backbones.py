@@ -2,7 +2,7 @@
 @Time    : 2021/3/20 22:10
 @Author  : Xiao Qinfeng
 @Email   : qfxiao@bjtu.edu.cn
-@File    : backbone.py
+@File    : backbones.py
 @Software: PyCharm
 @Desc    : 
 """

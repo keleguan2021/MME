@@ -25,7 +25,9 @@ class SEEDIVDataset(Dataset):
         [1, 2, 2, 1, 3, 3, 3, 1, 1, 2, 1, 0, 2, 3, 3, 0, 2, 3, 0, 0, 2, 0, 1, 0]
     ]
 
-    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):
+        self.transform = transform
+
         files = sorted(os.listdir(os.path.join(data_path, '1'))) + \
                 sorted(os.listdir(os.path.join(data_path, '2'))) + \
                 sorted(os.listdir(os.path.join(data_path, '3')))
@@ -87,6 +89,9 @@ class SEEDIVDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data[idx]
         y = self.labels[idx]
+
+        if self.transform is not None:
+            x = self.transform(x)
 
         return torch.from_numpy(x), torch.from_numpy(y)
 

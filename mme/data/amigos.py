@@ -22,7 +22,8 @@ class AMIGOSDataset(Dataset):
     num_subject = 40
     sampling_rate = 128
 
-    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):
+        self.transform = transform
         self.label_dim = label_dim
 
         files = sorted(os.listdir(data_path))
@@ -92,6 +93,9 @@ class AMIGOSDataset(Dataset):
         label = self.labels[item].astype(np.long)[:, self.label_dim]
         y = np.zeros_like(label, dtype=np.long)
         y[label >= 5] = 1
+
+        if self.transform is not None:
+            x = self.transform(x)
 
         return torch.from_numpy(x), torch.from_numpy(y)
 

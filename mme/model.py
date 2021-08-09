@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .backbone import Encoder, Encoder3d, ResNet2d3d, R1DNet, ResNet
+from mme.backbone.backbones import Encoder, Encoder3d, ResNet2d3d, R1DNet, ResNet
 
 
 # @torch.no_grad()

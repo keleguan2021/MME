@@ -21,7 +21,9 @@ class SEEDDataset(Dataset):
     sampling_rate = 200
     raw_labels = [2, 1, 0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 1, 2, 0]
 
-    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0):
+    def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):
+        self.transform = transform
+
         files = sorted(os.listdir(data_path))
         assert len(files) == self.num_subject
         files = [files[i] for i in subject_list]
@@ -80,6 +82,9 @@ class SEEDDataset(Dataset):
     def __getitem__(self, idx):
         x = self.data[idx].astype(np.float32)
         y = self.labels[idx].astype(np.long)
+
+        if self.transform is not None:
+            x = self.transform(x)
 
         return torch.from_numpy(x), torch.from_numpy(y)
 
