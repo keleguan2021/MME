@@ -22,7 +22,7 @@ from tqdm.std import tqdm
 from mme import DCC, DCCClassifier
 from mme import adjust_learning_rate, logits_accuracy, mask_accuracy, get_performance
 from mme import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SleepDataset, SleepDatasetImg
-from mme.dataset import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT, \
+from mme.data import SEED_NUM_SUBJECT, SEED_IV_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT, \
     ISRUC_NUM_SUBJECT, SLEEPEDF_NUM_SUBJECT
 
 

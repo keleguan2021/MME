@@ -29,7 +29,7 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 from mme import Encoder
 from mme import logits_accuracy, get_performance
 from mme import SEEDDataset, DEAPDataset, AMIGOSDataset
-from mme.dataset import (
+from mme.data import (
     SEED_NUM_SUBJECT, SEED_SAMPLING_RATE, SEED_LABELS,
     DEAP_NUM_SUBJECT, DEAP_SAMPLING_RATE,
     AMIGOS_NUM_SUBJECT, AMIGOS_SAMPLING_RATE

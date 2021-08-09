@@ -19,7 +19,7 @@ import torch
 from sklearn.model_selection import KFold
 from tqdm.std import tqdm
 
-from mme.dataset import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
+from mme.data import SEED_NUM_SUBJECT, DEAP_NUM_SUBJECT, AMIGOS_NUM_SUBJECT
 
 
 def setup_seed(seed):
