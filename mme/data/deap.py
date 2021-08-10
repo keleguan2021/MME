@@ -19,7 +19,7 @@ from tqdm.std import tqdm
 class DEAPDataset(Dataset):
 
     num_subject = 32
-    sampling_rate = 128
+    fs = 128
 
     def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, modal='eeg', transform=None):
         self.label_dim = label_dim

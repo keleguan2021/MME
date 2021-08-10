@@ -22,6 +22,7 @@ from tqdm.std import tqdm
 
 from mme import DCC
 from mme import adjust_learning_rate
+from mme.transforms import Spectrogram
 from mme.data.datasets import SEEDDataset, SEEDIVDataset, DEAPDataset, AMIGOSDataset, SleepEDFDataset, ISRUCDataset
 
 
@@ -44,11 +45,12 @@ def parse_args(verbose=True):
     parser.add_argument('--data-path', type=str, default='/data/DataHub/EmotionRecognition/SEED/Preprocessed_EEG')
     parser.add_argument('--data-name', type=str, default='SEED',
                         choices=['SEED', 'SEED-IV', 'DEAP', 'AMIGOS', 'ISRUC', 'SLEEPEDF'])
-    parser.add_argument('--modal', type=str, default='eeg', choices=['eeg', 'eog', 'emg'])
+    parser.add_argument('--modal', type=str, default='eeg', choices=['eeg', 'eog', 'emg', 'spectrogram'])
     parser.add_argument('--save-path', type=str, default='./cache/tmp')
     parser.add_argument('--classes', type=int, default=3)
     parser.add_argument('--label-dim', type=int, default=0, help='Ignored for SEED')
     parser.add_argument('--preprocessing', choices=['none', 'quantile', 'standard'], default='standard')
+    parser.add_argument('--fs', type=int, default=None)
 
     # Model
     parser.add_argument('--input-channel', type=int, default=None)
@@ -148,23 +150,27 @@ def main_worker(run_id, train_patients, test_patients, args):
     else:
         raise ValueError
 
+    transform = Spectrogram(fs=args.fs) if args.modal == 'spectrogram' else None
+    if args.modal == 'spectrogram':
+        args.modal = 'eeg' # only support for eeg
+
     if args.data_name == 'SEED':
         train_dataset = SEEDDataset(data_path=args.data_path, num_seq=args.num_seq,
-                                    subject_list=train_patients, label_dim=args.label_dim)
+                                    subject_list=train_patients, label_dim=args.label_dim, transform=transform)
     elif args.data_name == 'SEED-IV':
         train_dataset = SEEDIVDataset(data_path=args.data_path, num_seq=args.num_seq,
-                                      subject_list=train_patients, label_dim=args.label_dim)
+                                      subject_list=train_patients, label_dim=args.label_dim, transform=transform)
     elif args.data_name == 'DEAP':
         train_dataset = DEAPDataset(data_path=args.data_path, num_seq=args.num_seq,
-                                    subject_list=train_patients, label_dim=args.label_dim, modal=args.modal)
+                                    subject_list=train_patients, label_dim=args.label_dim, modal=args.modal, transform=transform)
     # elif args.data_name == 'AMIGOS':
     #     train_dataset = AMIGOSDataset(args.data_path, args.num_seq, train_patients, label_dim=args.label_dim)
     elif args.data_name == 'ISRUC':
         train_dataset = ISRUCDataset(data_path=args.data_path, num_epoch=args.num_seq, patients=train_patients,
-                                     modal=args.modal)
+                                     modal=args.modal, transform=transform)
     elif args.data_name == 'SLEEPEDF':
         train_dataset = SleepEDFDataset(data_path=args.data_path, num_epoch=args.num_seq, patients=train_patients,
-                                        modal=args.modal)
+                                        modal=args.modal, transform=transform)
     else:
         raise ValueError
 
@@ -194,13 +200,17 @@ if __name__ == '__main__':
 
     if args.data_name == 'SEED':
         patients = np.arange(SEEDDataset.num_subject)
+        args.fs = SEEDDataset.fs
     elif args.data_name == 'SEED-IV':
         patients = np.arange(SEEDIVDataset.num_subject)
+        args.fs = SEEDIVDataset.fs
     elif args.data_name == 'DEAP':
         patients = np.arange(DEAPDataset.num_subject)
+        args.fs = DEAPDataset.fs
     elif args.data_name == 'AMIGOS':
         patients = np.arange(AMIGOSDataset.num_subject)
-    elif args.data_name == 'ISRUC' or args.data_name == 'SLEEPEDF':
+        args.fs = AMIGOSDataset.fs
+    elif args.data_name == 'ISRUC':
         files = os.listdir(args.data_path)
         patients = []
         for a_file in files:
@@ -209,6 +219,17 @@ if __name__ == '__main__':
 
         patients = sorted(patients)
         patients = np.asarray(patients)
+        args.fs = ISRUCDataset.fs
+    elif args.data_name == 'SLEEPEDF':
+        files = os.listdir(args.data_path)
+        patients = []
+        for a_file in files:
+            if a_file.endswith('.npz'):
+                patients.append(a_file)
+
+        patients = sorted(patients)
+        patients = np.asarray(patients)
+        args.fs = SleepEDFDataset.fs
     else:
         raise ValueError
 

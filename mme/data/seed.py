@@ -18,7 +18,7 @@ from torch.utils.data import Dataset
 
 class SEEDDataset(Dataset):
     num_subject = 45
-    sampling_rate = 200
+    fs = 200
     raw_labels = [2, 1, 0, 0, 1, 2, 0, 1, 2, 2, 1, 0, 1, 2, 0]
 
     def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):

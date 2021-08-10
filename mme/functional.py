@@ -13,95 +13,122 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
+import numpy as np
+from scipy.fftpack import fft, ifft
 from scipy import signal
 
 
-def spectrogram(
-        waveform: Tensor,
-        pad: int,
-        window: Tensor,
-        n_fft: int,
-        hop_length: int,
-        win_length: int,
-        power: Optional[float],
-        normalized: bool,
-        center: bool = True,
-        pad_mode: str = "reflect",
-        onesided: bool = True,
-        return_complex: bool = True,
-) -> Tensor:
-    r"""Create a spectrogram or a batch of spectrograms from a raw audio signal.
-    The spectrogram can be either magnitude-only or complex.
-    Args:
-        waveform (Tensor): Tensor of audio of dimension (..., time)
-        pad (int): Two sided padding of signal
-        window (Tensor): Window tensor that is applied/multiplied to each frame/window
-        n_fft (int): Size of FFT
-        hop_length (int): Length of hop between STFT windows
-        win_length (int): Window size
-        power (float or None): Exponent for the magnitude spectrogram,
-            (must be > 0) e.g., 1 for energy, 2 for power, etc.
-            If None, then the complex spectrum is returned instead.
-        normalized (bool): Whether to normalize by magnitude after stft
-        center (bool, optional): whether to pad :attr:`waveform` on both sides so
-            that the :math:`t`-th frame is centered at time :math:`t \times \text{hop\_length}`.
-            Default: ``True``
-        pad_mode (string, optional): controls the padding method used when
-            :attr:`center` is ``True``. Default: ``"reflect"``
-        onesided (bool, optional): controls whether to return half of results to
-            avoid redundancy. Default: ``True``
-        return_complex (bool, optional):
-            Indicates whether the resulting complex-valued Tensor should be represented with
-            native complex dtype, such as `torch.cfloat` and `torch.cdouble`, or real dtype
-            mimicking complex value with an extra dimension for real and imaginary parts.
-            (See also ``torch.view_as_real``.)
-            This argument is only effective when ``power=None``. It is ignored for
-            cases where ``power`` is a number as in those cases, the returned tensor is
-            power spectrogram, which is a real-valued tensor.
-    Returns:
-        Tensor: Dimension (..., freq, time), freq is
-        ``n_fft // 2 + 1`` and ``n_fft`` is the number of
-        Fourier bins, and time is the number of window hops (n_frame).
-    """
-    if power is None and not return_complex:
-        warnings.warn(
-            "The use of pseudo complex type in spectrogram is now deprecated."
-            "Please migrate to native complex type by providing `return_complex=True`. "
-            "Please refer to https://github.com/pytorch/audio/issues/1337 "
-            "for more details about torchaudio's plan to migrate to native complex type."
-        )
+def spectrogram(x: np.ndarray, fs: float, window: str, nperseg: int, nfft: int):
+    return signal.spectrogram(x, fs=fs, window=window, nperseg=nperseg, nfft=nfft)
 
-    if pad > 0:
-        # TODO add "with torch.no_grad():" back when JIT supports it
-        waveform = torch.nn.functional.pad(waveform, (pad, pad), "constant")
 
-    # pack batch
-    shape = waveform.size()
-    waveform = waveform.reshape(-1, shape[-1])
-
-    # default values are consistent with librosa.core.spectrum._spectrogram
-    spec_f = torch.stft(
-        input=waveform,
-        n_fft=n_fft,
-        hop_length=hop_length,
-        win_length=win_length,
-        window=window,
-        center=center,
-        pad_mode=pad_mode,
-        normalized=False,
-        onesided=onesided,
-        return_complex=True,
-    )
-
-    # unpack batch
-    spec_f = spec_f.reshape(shape[:-1] + spec_f.shape[-2:])
-
-    if normalized:
-        spec_f /= window.pow(2.).sum().sqrt()
-    if power is not None:
-        if power == 1.0:
-            return spec_f.abs()
-        return spec_f.abs().pow(power)
-    if not return_complex:
-        return torch.view_as_real(spec_f)
-    return spec_f
+# def DE_PSD(data, stft_para):
+#     '''
+#     compute DE and PSD
+#     --------
+#     input:  data [n*m]          n electrodes, m time points
+#             stft_para.stftn     frequency domain sampling rate
+#             stft_para.fStart    start frequency of each frequency band
+#             stft_para.fEnd      end frequency of each frequency band
+#             stft_para.window    window length of each sample point(seconds)
+#             stft_para.fs        original frequency
+#     output: psd,DE [n*l*k]        n electrodes, l windows, k frequency bands
+#     '''
+#     # initialize the parameters
+#     STFTN = stft_para['stftn']
+#     fStart = stft_para['fStart']
+#     fEnd = stft_para['fEnd']
+#     fs = stft_para['fs']
+#     window = stft_para['window']
+#
+#     WindowPoints = fs * window
+#
+#     fStartNum = np.zeros([len(fStart)], dtype=int)
+#     fEndNum = np.zeros([len(fEnd)], dtype=int)
+#     for i in range(0, len(stft_para['fStart'])):
+#         fStartNum[i] = int(fStart[i] / fs * STFTN)
+#         fEndNum[i] = int(fEnd[i] / fs * STFTN)
+#
+#     # print(fStartNum[0],fEndNum[0])
+#     n = data.shape[0]
+#     m = data.shape[1]
+#
+#     # print(m,n,l)
+#     psd = np.zeros([n, len(fStart)])
+#     de = np.zeros([n, len(fStart)])
+#     # Hanning window
+#     Hlength = window * fs
+#     # Hwindow=hanning(Hlength)
+#     Hwindow = np.array([0.5 - 0.5 * np.cos(2 * np.pi * n / (Hlength + 1)) for n in range(1, Hlength + 1)])
+#
+#     WindowPoints = fs * window
+#     dataNow = data[0:n]
+#     for j in range(0, n):
+#         temp = dataNow[j]
+#         Hdata = temp * Hwindow
+#         FFTdata = fft(Hdata, STFTN)
+#         magFFTdata = abs(FFTdata[0:int(STFTN / 2)])
+#         for p in range(0, len(fStart)):
+#             E = 0
+#             # E_log = 0
+#             for p0 in range(fStartNum[p] - 1, fEndNum[p]):
+#                 E = E + magFFTdata[p0] * magFFTdata[p0]
+#             #    E_log = E_log + log2(magFFTdata(p0)*magFFTdata(p0)+1)
+#             E = E / (fEndNum[p] - fStartNum[p] + 1)
+#             psd[j][p] = E
+#             de[j][p] = math.log(100 * E, 2)
+#             # de(j,i,p)=log2((1+E)^4)
+#
+#     return psd, de
+#
+#
+# def differential_entropy(x: np.ndarray, fs: float, freq_low: int, freq_high: int, window: str, window_len: int):
+#     STFTN = stft_para['stftn']
+#     fStart = stft_para['fStart']
+#     fEnd = stft_para['fEnd']
+#     fs = stft_para['fs']
+#     window = stft_para['window']
+#
+#     WindowPoints = fs * window
+#
+#     fStartNum = np.zeros([len(fStart)], dtype=int)
+#     fEndNum = np.zeros([len(fEnd)], dtype=int)
+#     for i in range(0, len(stft_para['fStart'])):
+#         fStartNum[i] = int(fStart[i] / fs * STFTN)
+#         fEndNum[i] = int(fEnd[i] / fs * STFTN)
+#
+#     # print(fStartNum[0],fEndNum[0])
+#     n = x.shape[0]
+#     m = x.shape[1]
+#
+#     # print(m,n,l)
+#     psd = np.zeros([n, len(fStart)])
+#     de = np.zeros([n, len(fStart)])
+#     # Hanning window
+#     Hlength = window * fs
+#     # Hwindow=hanning(Hlength)
+#     Hwindow = np.array([0.5 - 0.5 * np.cos(2 * np.pi * n / (Hlength + 1)) for n in range(1, Hlength + 1)])
+#
+#     WindowPoints = fs * window
+#     dataNow = x[0:n]
+#     for j in range(0, n):
+#         temp = dataNow[j]
+#         Hdata = temp * Hwindow
+#         FFTdata = fft(Hdata, STFTN)
+#         magFFTdata = abs(FFTdata[0:int(STFTN / 2)])
+#         for p in range(0, len(fStart)):
+#             E = 0
+#             # E_log = 0
+#             for p0 in range(fStartNum[p] - 1, fEndNum[p]):
+#                 E = E + magFFTdata[p0] * magFFTdata[p0]
+#             #    E_log = E_log + log2(magFFTdata(p0)*magFFTdata(p0)+1)
+#             E = E / (fEndNum[p] - fStartNum[p] + 1)
+#             psd[j][p] = E
+#             de[j][p] = math.log(100 * E, 2)
+#             # de(j,i,p)=log2((1+E)^4)
+#
+#     return psd, de
+#
+#
+# def power_spectral_density(x: np.ndarray):
+#     pass

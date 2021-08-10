@@ -20,7 +20,7 @@ from torch.utils.data import Dataset
 class AMIGOSDataset(Dataset):
 
     num_subject = 40
-    sampling_rate = 128
+    fs = 128
 
     def __init__(self, data_path, num_seq, subject_list: List, label_dim=0, transform=None):
         self.transform = transform
